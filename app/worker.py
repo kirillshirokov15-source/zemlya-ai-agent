@@ -22,3 +22,4 @@ def healthcheck():
 
 # Import task modules so Celery registers them.
 import app.tasks.discovery  # noqa: E402,F401
+import app.tasks.qualification  # noqa: E402,F401
