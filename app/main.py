@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from app.api.routes.health import router as health_router
 from app.api.routes.tasks import router as tasks_router
+from app.api.routes.discovery import router as discovery_router
 
 app = FastAPI(
     title="Zemlya AI Agent",
@@ -10,6 +11,7 @@ app = FastAPI(
 
 app.include_router(health_router)
 app.include_router(tasks_router)
+app.include_router(discovery_router)
 
 
 @app.get("/")

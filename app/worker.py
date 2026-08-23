@@ -9,6 +9,16 @@ celery_app = Celery(
     backend=redis_url,
 )
 
+celery_app.conf.update(
+    task_track_started=True,
+    result_expires=86400,
+)
+
+
 @celery_app.task(name="healthcheck")
 def healthcheck():
     return {"status": "ok"}
+
+
+# Import task modules so Celery registers them.
+import app.tasks.discovery  # noqa: E402,F401
