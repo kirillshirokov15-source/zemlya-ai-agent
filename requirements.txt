@@ -11,3 +11,4 @@ openpyxl
 openai
 tavily-python
 python-telegram-bot
+psycopg2-binary
