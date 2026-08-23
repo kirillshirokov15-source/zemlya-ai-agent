@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+sqlalchemy
+psycopg[binary]
+alembic
+celery
+redis
+httpx
+openpyxl
+openai
+tavily-python
+python-telegram-bot
