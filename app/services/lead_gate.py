@@ -29,6 +29,26 @@ COMPLETED_MARKERS = (
     "объект завершён",
 )
 
+CATALOG_MARKERS = (
+    "каталог объектов",
+    "каталог недвижимости",
+    "представлены земельные участки",
+    "представлены участки",
+    "объекты продажи",
+    "продажа торговых центров",
+    "подборка объектов",
+    "несколько участков",
+)
+
+NO_CONCRETE_PROJECT_MARKERS = (
+    "не подтвержденный инвестиционный проект",
+    "не подтверждённый инвестиционный проект",
+    "конкретный проект не указан",
+    "конкретный проект, площадка и сроки реализации не указаны",
+    "а не подтвержденный инвестиционный проект",
+    "а не подтверждённый инвестиционный проект",
+)
+
 
 def _q(item: dict[str, Any]) -> dict[str, Any]:
     return item.get("qualification") or {}
@@ -57,9 +77,29 @@ def _has_moscow_region(item: dict[str, Any]) -> bool:
     if any(marker in location_hint for marker in MOSCOW_REGION_MARKERS):
         return True
 
-    # Use title/content only as secondary explicit evidence.
     text = _combined_text(item)
     return any(marker in text for marker in MOSCOW_REGION_MARKERS)
+
+
+def _looks_like_catalog(item: dict[str, Any]) -> bool:
+    text = _combined_text(item)
+    return any(marker in text for marker in CATALOG_MARKERS)
+
+
+def _lacks_concrete_project(item: dict[str, Any]) -> bool:
+    text = _combined_text(item)
+    q = _q(item)
+
+    if any(marker in text for marker in NO_CONCRETE_PROJECT_MARKERS):
+        return True
+
+    if (
+        _looks_like_catalog(item)
+        and q.get("signal_status") != "confirmed_project"
+    ):
+        return True
+
+    return False
 
 
 def classify_lead(item: dict[str, Any]) -> dict[str, Any]:
@@ -97,6 +137,12 @@ def classify_lead(item: dict[str, Any]) -> dict[str, Any]:
     if any(marker in text for marker in PAUSED_MARKERS):
         verification_reasons.append("project_paused")
 
+    if _looks_like_catalog(item):
+        verification_reasons.append("catalog_or_listing_page")
+
+    if _lacks_concrete_project(item):
+        verification_reasons.append("concrete_project_not_confirmed")
+
     if qualification.get("company_name"):
         active_reasons.append("company_known")
 
@@ -120,7 +166,7 @@ def classify_lead(item: dict[str, Any]) -> dict[str, Any]:
     gated["lead_gate"] = {
         "bucket": bucket,
         "active_reasons": active_reasons,
-        "verification_reasons": verification_reasons,
+        "verification_reasons": list(dict.fromkeys(verification_reasons)),
         "reject_reasons": reject_reasons,
     }
     return gated
