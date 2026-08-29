@@ -4,6 +4,7 @@ from app.worker import celery_app
 from app.services.tavily_search import run_default_discovery
 from app.services.qualification import qualify_results
 from app.services.project_dedup import deduplicate_qualified_projects
+from app.services.lead_scoring import score_projects
 
 
 @celery_app.task(name="qualification.discovery_test")
@@ -21,6 +22,10 @@ def qualification_discovery_test():
         qualification["qualified"]
     )
 
+    scoring = score_projects(
+        deduplication["projects"]
+    )
+
     return {
         "discovery": {
             "queries_used": discovery["queries_used"],
@@ -28,4 +33,5 @@ def qualification_discovery_test():
         },
         "qualification": qualification,
         "deduplication": deduplication,
+        "scoring": scoring,
     }
