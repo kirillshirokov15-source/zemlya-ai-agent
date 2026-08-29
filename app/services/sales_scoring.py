@@ -1,95 +1,53 @@
 from __future__ import annotations
-
-from datetime import date
 from typing import Any
 
+def _payload(project: dict[str, Any]) -> dict[str, Any]:
+    return project.get("qualification") or project
 
-def _has_decision_maker(enrichment: dict[str, Any]) -> bool:
-    markers = (
-        "генераль", "директор", "владел", "собствен", "развити",
-        "инвест", "строител", "недвиж", "земел",
-    )
-    for contact in enrichment.get("contacts") or []:
-        role = str(contact.get("role") or "").lower()
-        if contact.get("name") and any(m in role for m in markers):
-            return True
-    return False
+def calculate_sales_score(project: dict[str, Any]) -> dict[str, Any]:
+    p = _payload(project); e = project.get("enrichment") or {}; q = project.get("quality_gate") or {}
+    score, reasons = 0, []
+    company = e.get("company_legal_name") or e.get("company_name") or p.get("company_name")
+    inn = e.get("inn") or p.get("inn")
+    if company: score += 15; reasons.append("Компания установлена")
+    if inn: score += 10; reasons.append("Юрлицо подтверждено по ИНН")
 
+    contacts = e.get("contacts") or project.get("contacts") or []
+    direct = any((c.get("name") and (c.get("role") or c.get("position")) and (c.get("phone") or c.get("email"))) for c in contacts)
+    any_contact = any(c.get("phone") or c.get("email") for c in contacts)
+    if direct: score += 25; reasons.append("Найден ЛПР с прямым контактом")
+    elif any_contact: score += 15; reasons.append("Найден контакт для связи")
+    else: reasons.append("Прямой контакт ЛПР пока не найден")
 
-def _has_direct_contact(enrichment: dict[str, Any]) -> bool:
-    return any(
-        c.get("email") or c.get("phone")
-        for c in (enrichment.get("contacts") or [])
-    )
+    if p.get("confidence") == "high": score += 10
+    elif p.get("confidence") == "medium": score += 6
+    if p.get("signal_status") == "confirmed_project": score += 10; reasons.append("Проект подтвержден")
+    elif p.get("signal_status") == "early_signal": score += 4
 
+    land = p.get("land_status")
+    if land == "confirmed_needed": score += 20; reasons.append("Подтверждена потребность в участке")
+    elif land == "high_probability": score += 14
+    elif land == "unknown": score += 7
+    elif land == "land_defined": score += 2; reasons.append("Участок уже определен")
 
-def _priority(score: int) -> str:
-    if score >= 80:
-        return "A_hot"
-    if score >= 65:
-        return "B_work"
-    if score >= 50:
-        return "C_verify"
-    return "D_research"
-
-
-def _action(score: int, project: dict[str, Any]) -> str:
-    enrichment = project.get("enrichment") or {}
-    if not (project.get("company_name") or project.get("resolved_company_name")):
-        return "resolve_company"
-    if score >= 80 and _has_direct_contact(enrichment):
-        return "contact_now"
-    if score >= 65:
-        return "find_decision_maker"
-    if score >= 50:
-        return "verify_project_status"
-    return "research_later"
-
-
-def score_sales_project(project: dict[str, Any]) -> dict[str, Any]:
-    project_score = int(project.get("lead_score") or 0)
-    enrichment = project.get("enrichment") or {}
-    company_known = bool(project.get("company_name") or project.get("resolved_company_name"))
-    resolution = enrichment.get("resolution_confidence")
-
-    adjustments: dict[str, int] = {}
-    adjustments["company_identity"] = 8 if company_known else -18
-    adjustments["identity_resolution"] = 4 if resolution == "high" else (2 if resolution == "medium" else 0)
-    adjustments["legal_identity"] = 3 if (project.get("inn") or project.get("ogrn")) else 0
-    adjustments["decision_maker"] = 7 if _has_decision_maker(enrichment) else 0
-    adjustments["direct_contact"] = 5 if _has_direct_contact(enrichment) else 0
-
-    land_status = project.get("land_status")
-    adjustments["land_already_defined"] = -8 if land_status == "land_defined" else 0
-
-    # A project whose stated launch is already around/past the current period needs status verification,
-    # not immediate sales outreach. The temporal quality stage can set this marker.
     temporal = project.get("temporal_quality") or {}
-    adjustments["status_uncertainty"] = -10 if temporal.get("needs_current_status_check") else 0
+    if not temporal.get("needs_current_status_check"): score += 10
+    else: reasons.append("Нужно перепроверить текущий статус")
 
-    sales_score = max(0, min(100, project_score + sum(adjustments.values())))
+    if q.get("existing_site_modernization"): score -= 35; reasons.append("Модернизация существующей площадки")
+    if q.get("land_already_secured"): score -= 15
+    if q.get("needs_current_status_check"): score -= 10
+    score = max(0, min(100, score))
+
+    if score >= 90: label, action = "Готов к контакту", "Связаться с ЛПР"
+    elif score >= 70: label, action = "Высокий потенциал", "Дособрать контакт и связаться"
+    elif score >= 50: label, action = "Требует проверки", "Проверить недостающие данные"
+    else: label, action = "Низкий приоритет", "Оставить на повторную проверку"
+
     out = dict(project)
-    out["project_score"] = project_score
-    out["sales_score"] = sales_score
-    out["sales_priority"] = _priority(sales_score)
-    out["recommended_action"] = _action(sales_score, out)
-    out["sales_score_breakdown"] = {
-        "base_project_score": project_score,
-        "adjustments": adjustments,
-        "total": sales_score,
-        "scored_at": date.today().isoformat(),
-    }
+    out.update(sales_score=score, sales_priority=label, sales_action=action, sales_score_reasons=reasons)
     return out
 
-
-def score_sales_projects(projects: list[dict[str, Any]]) -> dict[str, Any]:
-    scored = [score_sales_project(p) for p in projects]
-    scored.sort(key=lambda x: (x.get("sales_score") or 0, x.get("project_score") or 0), reverse=True)
-    return {
-        "projects_scored_count": len(scored),
-        "priority_counts": {
-            key: sum(1 for p in scored if p.get("sales_priority") == key)
-            for key in ("A_hot", "B_work", "C_verify", "D_research")
-        },
-        "projects": scored,
-    }
+def score_sales_readiness(projects):
+    return sorted((calculate_sales_score(p) for p in projects),
+                  key=lambda p:(p.get("sales_score",0),p.get("project_score",p.get("lead_score",0))), reverse=True)
