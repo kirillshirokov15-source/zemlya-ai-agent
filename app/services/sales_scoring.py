@@ -51,3 +51,8 @@ def calculate_sales_score(project: dict[str, Any]) -> dict[str, Any]:
 def score_sales_readiness(projects):
     return sorted((calculate_sales_score(p) for p in projects),
                   key=lambda p:(p.get("sales_score",0),p.get("project_score",p.get("lead_score",0))), reverse=True)
+
+
+# Backward compatibility with earlier qualification task imports.
+def score_sales_projects(projects):
+    return score_sales_readiness(projects)
