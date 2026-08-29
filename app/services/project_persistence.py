@@ -39,7 +39,7 @@ def _engine() -> Engine:
 
 
 DDL = """
-CREATE TABLE IF NOT EXISTS search_runs (
+CREATE TABLE IF NOT EXISTS lead_search_runs (
     id UUID PRIMARY KEY,
     started_at TIMESTAMPTZ NOT NULL,
     finished_at TIMESTAMPTZ,
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS search_runs (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-CREATE TABLE IF NOT EXISTS projects (
+CREATE TABLE IF NOT EXISTS lead_projects (
     id UUID PRIMARY KEY,
     fingerprint TEXT NOT NULL UNIQUE,
     bucket TEXT NOT NULL,
@@ -72,20 +72,20 @@ CREATE TABLE IF NOT EXISTS projects (
     recommended_action TEXT,
     first_seen_at TIMESTAMPTZ NOT NULL,
     last_seen_at TIMESTAMPTZ NOT NULL,
-    last_search_run_id UUID REFERENCES search_runs(id) ON DELETE SET NULL,
+    last_search_run_id UUID REFERENCES lead_search_runs(id) ON DELETE SET NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     raw JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-CREATE INDEX IF NOT EXISTS ix_projects_bucket ON projects(bucket);
-CREATE INDEX IF NOT EXISTS ix_projects_lead_score ON projects(lead_score DESC);
-CREATE INDEX IF NOT EXISTS ix_projects_stage ON projects(stage);
-CREATE INDEX IF NOT EXISTS ix_projects_company_name ON projects(company_name);
-CREATE INDEX IF NOT EXISTS ix_projects_last_seen_at ON projects(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS ix_lead_projects_bucket ON lead_projects(bucket);
+CREATE INDEX IF NOT EXISTS ix_lead_projects_lead_score ON lead_projects(lead_score DESC);
+CREATE INDEX IF NOT EXISTS ix_lead_projects_stage ON lead_projects(stage);
+CREATE INDEX IF NOT EXISTS ix_lead_projects_company_name ON lead_projects(company_name);
+CREATE INDEX IF NOT EXISTS ix_lead_projects_last_seen_at ON lead_projects(last_seen_at DESC);
 
-CREATE TABLE IF NOT EXISTS project_sources (
+CREATE TABLE IF NOT EXISTS lead_project_sources (
     id UUID PRIMARY KEY,
-    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    project_id UUID NOT NULL REFERENCES lead_projects(id) ON DELETE CASCADE,
     url TEXT NOT NULL,
     title TEXT,
     domain TEXT,
@@ -99,20 +99,20 @@ CREATE TABLE IF NOT EXISTS project_sources (
     UNIQUE(project_id, url)
 );
 
-CREATE INDEX IF NOT EXISTS ix_project_sources_project_id
-    ON project_sources(project_id);
+CREATE INDEX IF NOT EXISTS ix_lead_project_sources_project_id
+    ON lead_project_sources(project_id);
 
-CREATE TABLE IF NOT EXISTS project_history (
+CREATE TABLE IF NOT EXISTS lead_project_history (
     id UUID PRIMARY KEY,
-    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    search_run_id UUID REFERENCES search_runs(id) ON DELETE SET NULL,
+    project_id UUID NOT NULL REFERENCES lead_projects(id) ON DELETE CASCADE,
+    search_run_id UUID REFERENCES lead_search_runs(id) ON DELETE SET NULL,
     changed_at TIMESTAMPTZ NOT NULL,
     changed_fields JSONB NOT NULL,
     snapshot JSONB NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS ix_project_history_project_id_changed_at
-    ON project_history(project_id, changed_at DESC);
+CREATE INDEX IF NOT EXISTS ix_lead_project_history_project_id_changed_at
+    ON lead_project_history(project_id, changed_at DESC);
 """
 
 
@@ -203,7 +203,7 @@ def create_search_run(
     with _engine().begin() as conn:
         conn.execute(
             text("""
-                INSERT INTO search_runs (
+                INSERT INTO lead_search_runs (
                     id, started_at, status, queries_used,
                     discovered_count, metadata
                 )
@@ -239,7 +239,7 @@ def finish_search_run(
     with _engine().begin() as conn:
         conn.execute(
             text("""
-                UPDATE search_runs
+                UPDATE lead_search_runs
                 SET finished_at = :finished_at,
                     status = :status,
                     extracted_count = :extracted_count,
@@ -295,7 +295,7 @@ def upsert_project(
         existing = conn.execute(
             text("""
                 SELECT *
-                FROM projects
+                FROM lead_projects
                 WHERE fingerprint = :fingerprint
                 FOR UPDATE
             """),
@@ -309,7 +309,7 @@ def upsert_project(
 
             conn.execute(
                 text("""
-                    UPDATE projects
+                    UPDATE lead_projects
                     SET bucket = :bucket,
                         company_name = :company_name,
                         project_type = :project_type,
@@ -341,7 +341,7 @@ def upsert_project(
             if changes:
                 conn.execute(
                     text("""
-                        INSERT INTO project_history (
+                        INSERT INTO lead_project_history (
                             id, project_id, search_run_id, changed_at,
                             changed_fields, snapshot
                         )
@@ -371,7 +371,7 @@ def upsert_project(
             project_id = str(uuid.uuid4())
             conn.execute(
                 text("""
-                    INSERT INTO projects (
+                    INSERT INTO lead_projects (
                         id, fingerprint, bucket, company_name, project_type,
                         project_summary, location, investment_rub, stage,
                         land_status, signal_status, confidence, lead_score,
@@ -401,7 +401,7 @@ def upsert_project(
 
             conn.execute(
                 text("""
-                    INSERT INTO project_history (
+                    INSERT INTO lead_project_history (
                         id, project_id, search_run_id, changed_at,
                         changed_fields, snapshot
                     )
@@ -431,7 +431,7 @@ def upsert_project(
         for source in _source_rows(project):
             conn.execute(
                 text("""
-                    INSERT INTO project_sources (
+                    INSERT INTO lead_project_sources (
                         id, project_id, url, title, domain, source_tier,
                         search_query, search_score, published_date,
                         first_seen_at, last_seen_at, evidence
@@ -478,13 +478,13 @@ def upsert_project(
 def persist_pipeline_results(
     *,
     search_run_id: str,
-    active_scored_projects: list[dict[str, Any]],
+    active_scored_lead_projects: list[dict[str, Any]],
     verification_items: list[dict[str, Any]],
 ) -> dict[str, Any]:
     active_ids = []
     verification_ids = []
 
-    for project in active_scored_projects:
+    for project in active_scored_lead_projects:
         active_ids.append(
             upsert_project(
                 project,
@@ -539,7 +539,7 @@ def persist_pipeline_results(
     }
 
 
-def list_projects(
+def list_lead_projects(
     *,
     bucket: str | None = None,
     min_score: int | None = None,
@@ -588,7 +588,7 @@ def list_projects(
             recommended_action,
             first_seen_at,
             last_seen_at
-        FROM projects
+        FROM lead_projects
         WHERE {' AND '.join(clauses)}
         ORDER BY
             CASE WHEN bucket = 'active' THEN 0 ELSE 1 END,
@@ -625,7 +625,7 @@ def get_project(project_id: str) -> dict[str, Any] | None:
                     first_seen_at,
                     last_seen_at,
                     raw
-                FROM projects
+                FROM lead_projects
                 WHERE id = CAST(:id AS uuid)
             """),
             {"id": project_id},
@@ -641,7 +641,7 @@ def get_project(project_id: str) -> dict[str, Any] | None:
                     url, title, domain, source_tier, search_query,
                     search_score, published_date, first_seen_at,
                     last_seen_at, evidence
-                FROM project_sources
+                FROM lead_project_sources
                 WHERE project_id = CAST(:id AS uuid)
                 ORDER BY last_seen_at DESC
             """),
@@ -654,7 +654,7 @@ def get_project(project_id: str) -> dict[str, Any] | None:
                     id::text AS id,
                     search_run_id::text AS search_run_id,
                     changed_at, changed_fields, snapshot
-                FROM project_history
+                FROM lead_project_history
                 WHERE project_id = CAST(:id AS uuid)
                 ORDER BY changed_at DESC
                 LIMIT 100
@@ -668,7 +668,7 @@ def get_project(project_id: str) -> dict[str, Any] | None:
     return result
 
 
-def list_search_runs(limit: int = 50) -> list[dict[str, Any]]:
+def list_lead_search_runs(limit: int = 50) -> list[dict[str, Any]]:
     ensure_schema()
     with _engine().connect() as conn:
         rows = conn.execute(
@@ -679,7 +679,7 @@ def list_search_runs(limit: int = 50) -> list[dict[str, Any]]:
                     discovered_count, extracted_count, qualified_count,
                     active_count, verification_count, rejected_count,
                     metadata
-                FROM search_runs
+                FROM lead_search_runs
                 ORDER BY started_at DESC
                 LIMIT :limit
             """),
