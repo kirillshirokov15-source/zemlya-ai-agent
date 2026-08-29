@@ -19,6 +19,19 @@ from app.worker import celery_app
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+def _stage_label(value):
+    return {"A":"A – Ранняя стадия", "B":"B – Подготовка площадки", "V":"V – Участок определён", "G":"G – Строительство началось", "unknown":"Стадия уточняется"}.get(value, "Стадия уточняется")
+
+def _land_label(value):
+    return {"confirmed_needed":"Требуется земельный участок", "high_probability":"Вероятно требуется участок", "land_defined":"Участок уже определён", "unknown":"Статус участка уточняется"}.get(value, "Статус участка уточняется")
+
+def _priority_label(value):
+    return {"A_hot":"Высокий", "A_priority":"Высокий", "B_work":"Перспективный", "B_strong":"Перспективный", "C_verify":"Требует проверки", "D_research":"Низкий", "D_low":"Низкий"}.get(value, "Не определён")
+
+def _action_label(value):
+    return {"resolve_company":"Установить компанию-инвестора", "contact_now":"Связаться с ЛПР", "find_decision_maker":"Найти ЛПР и контакты", "verify_project_status":"Проверить актуальный статус проекта", "research_later":"Повторно проверить позже", "deep_verify_now":"Срочно проверить проект", "verify_and_enrich":"Проверить и собрать контакты", "verify_if_capacity":"Проверить статус", "keep_low_priority":"Повторно проверить позже", "manual_verification":"Проверить вручную"}.get(value, "Проверить лид")
+
+
 @router.get("")
 def projects_list(
     bucket: str | None = None,
@@ -104,19 +117,19 @@ def projects_export_xlsx(
     ws = wb.active
     ws.title = "Лиды"
     headers = [
-        "ID", "Статус", "Sales Score", "Project Score", "Sales Priority",
+        "ID", "Статус лида", "Sales Score", "Project Score", "Приоритет продажи",
         "Компания", "Юр. лицо", "ИНН", "Сайт", "Тип проекта", "Описание",
-        "Локация", "Инвестиции, ₽", "Этап", "Статус земли", "Сигнал",
-        "Уверенность", "Следующее действие", "Первое обнаружение", "Последнее обнаружение",
+        "Локация", "Инвестиции, ₽", "Стадия проекта", "Земельный участок", "Статус проекта",
+        "Уверенность данных", "Что делать", "Первое обнаружение", "Последнее обнаружение",
     ]
     ws.append(headers)
     for p in projects:
         ws.append([
             p.get("id"), p.get("bucket"), p.get("sales_score"), p.get("project_score") or p.get("lead_score"),
-            p.get("sales_priority"), p.get("company_name"), p.get("legal_name"), p.get("inn"), p.get("website"),
+            _priority_label(p.get("sales_priority") or p.get("priority")), p.get("company_name"), p.get("legal_name"), p.get("inn"), p.get("website"),
             p.get("project_type"), p.get("project_summary"), p.get("location"), p.get("investment_rub"),
-            p.get("stage"), p.get("land_status"), p.get("signal_status"), p.get("confidence"),
-            p.get("recommended_action"), p.get("first_seen_at"), p.get("last_seen_at"),
+            _stage_label(p.get("stage")), _land_label(p.get("land_status")), p.get("signal_status"), p.get("confidence"),
+            _action_label(p.get("recommended_action")), p.get("first_seen_at"), p.get("last_seen_at"),
         ])
 
     header_fill = PatternFill("solid", fgColor="1F4E78")
@@ -163,29 +176,34 @@ button.primary{background:var(--accent);color:#fff;border-color:var(--accent);cu
 @media(max-width:800px){.wrap{padding:12px}.grid{grid-template-columns:1fr}.modal{padding:2vh 2vw}}
 </style></head>
 <body>
-<header><div><h1>Zemlya AI – база инвестиционных лидов</h1><div class="sub">Проекты Московской области – квалификация, company resolution и контакты</div></div><div class="status" id="runStatus">Готово</div></header>
+<header><div><h1>Zemlya AI – база инвестиционных лидов</h1><div class="sub">Инвестиционные проекты Московской области – проверка проекта, компании и контактов ЛПР</div></div><div class="status" id="runStatus">Готово</div></header>
 <div class="wrap">
-<div class="stats"><div class="card stat">Всего<b id="sAll">–</b></div><div class="card stat">Active<b id="sActive">–</b></div><div class="card stat">A / B лиды<b id="sHot">–</b></div><div class="card stat">На проверке<b id="sVerify">–</b></div></div>
+<div class="stats"><div class="card stat">Найдено лидов<b id="sAll">–</b></div><div class="card stat">В работе<b id="sActive">–</b></div><div class="card stat">Высокий / перспективный<b id="sHot">–</b></div><div class="card stat">Нужна проверка<b id="sVerify">–</b></div></div>
+<details class="card" style="margin-bottom:14px"><summary style="cursor:pointer;font-weight:700">Что означают стадии и оценки?</summary><div style="margin-top:10px;line-height:1.55"><b>A – Ранняя стадия:</b> проект объявлен, участок требуется или ещё не подтверждён. <b>B – Подготовка:</b> выбирают или оформляют площадку, документы и разрешения. <b>V – Участок определён:</b> земля уже выбрана или предоставлена, строительство ещё не подтверждено как начавшееся. <b>G – Строительство:</b> стройка уже началась – обычно низкий коммерческий приоритет.<br><br><b>Project Score</b> – насколько проект подходит услугам «Земля без торгов». <b>Sales Score</b> – насколько лид готов к работе продажника сейчас. Приоритет: <b>Высокий 80–100</b>, <b>Перспективный 65–79</b>, <b>Требует проверки 50–64</b>, <b>Низкий 0–49</b>.</div></details>
 <div class="toolbar card">
-<select id="bucket"><option value="">Все статусы</option><option value="active">Active</option><option value="verification_pool">Verification</option></select>
-<select id="priority"><option value="">Все приоритеты</option><option>A_hot</option><option>B_work</option><option>C_verify</option><option>D_research</option></select>
-<select id="stage"><option value="">Все этапы</option><option>A</option><option>B</option><option>V</option><option>unknown</option></select>
-<input id="company" class="grow" placeholder="Компания">
-<input id="minSales" type="number" min="0" max="100" placeholder="Sales Score от">
-<button onclick="load()">Применить</button><button class="primary" id="runBtn" onclick="startRun()">Запустить поиск</button>
-<a class="btn" href="/projects/export.xlsx">Excel</a>
+<select id="bucket"><option value="">Все лиды</option><option value="active">В работе</option><option value="verification_pool">Нужна ручная проверка</option></select>
+<select id="priority"><option value="">Любой приоритет</option><option value="A_hot">Высокий</option><option value="B_work">Перспективный</option><option value="C_verify">Требует проверки</option><option value="D_research">Низкий</option></select>
+<select id="stage"><option value="">Любая стадия</option><option value="A">A – Ранняя стадия</option><option value="B">B – Подготовка площадки</option><option value="V">V – Участок определён</option><option value="G">G – Строительство началось</option><option value="unknown">Стадия уточняется</option></select>
+<input id="company" class="grow" placeholder="Поиск по компании">
+<input id="minSales" type="number" min="0" max="100" placeholder="Sales Score от 0 до 100">
+<button onclick="load()">Применить фильтры</button><button class="primary" id="runBtn" onclick="startRun()">Запустить новый поиск</button>
+<a class="btn" href="/projects/export.xlsx">Скачать Excel</a>
 </div>
-<div class="tablebox"><table><thead><tr><th>Sales</th><th>Project</th><th>Приоритет</th><th>Компания</th><th>Проект</th><th>Локация</th><th>Инвестиции</th><th>Этап</th><th>Земля</th><th>Действие</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="tablebox"><table><thead><tr><th>Sales Score</th><th>Project Score</th><th>Приоритет</th><th>Компания</th><th>Проект</th><th>Локация</th><th>Инвестиции</th><th>Стадия проекта</th><th>Земельный участок</th><th>Что делать</th></tr></thead><tbody id="rows"></tbody></table></div>
 </div>
 <div class="modal" id="modal" onclick="if(event.target===this)closeModal()"><div class="panel"><button style="float:right" onclick="closeModal()">Закрыть</button><div id="detail">Загрузка…</div></div></div>
 <script>
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=v=>v==null?'–':new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(v)+' ₽';
+const stageLabel=v=>({A:'A – Ранняя стадия',B:'B – Подготовка площадки',V:'V – Участок определён',G:'G – Строительство началось',unknown:'Стадия уточняется'}[v]||'Стадия уточняется');
+const landLabel=v=>({confirmed_needed:'Требуется земельный участок',high_probability:'Вероятно требуется участок',land_defined:'Участок уже определён',unknown:'Статус участка уточняется'}[v]||'Статус участка уточняется');
+const priorityLabel=v=>({A_hot:'Высокий',A_priority:'Высокий',B_work:'Перспективный',B_strong:'Перспективный',C_verify:'Требует проверки',D_research:'Низкий',D_low:'Низкий'}[v]||'Не определён');
+const actionLabel=v=>({resolve_company:'Установить компанию-инвестора',contact_now:'Связаться с ЛПР',find_decision_maker:'Найти ЛПР и контакты',verify_project_status:'Проверить актуальный статус проекта',research_later:'Повторно проверить позже',deep_verify_now:'Срочно проверить проект',verify_and_enrich:'Проверить и собрать контакты',verify_if_capacity:'Проверить статус',keep_low_priority:'Повторно проверить позже',manual_verification:'Проверить вручную'}[v]||'Проверить лид');
 async function load(){let q=new URLSearchParams();for(let [id,key] of [['bucket','bucket'],['priority','sales_priority'],['stage','stage'],['company','company'],['minSales','min_sales_score']]){let v=document.getElementById(id).value;if(v)q.set(key,v)}q.set('limit','200');let d=await fetch('/projects?'+q).then(r=>r.json());render(d.projects||[])}
-function render(ps){document.getElementById('sAll').textContent=ps.length;document.getElementById('sActive').textContent=ps.filter(x=>x.bucket==='active').length;document.getElementById('sHot').textContent=ps.filter(x=>['A_hot','B_work'].includes(x.sales_priority)).length;document.getElementById('sVerify').textContent=ps.filter(x=>x.bucket==='verification_pool').length;document.getElementById('rows').innerHTML=ps.map(p=>`<tr class="click" onclick="openProject('${p.id}')"><td class="score">${p.sales_score??'–'}</td><td>${p.project_score??p.lead_score??'–'}</td><td><span class="badge ${p.sales_priority==='A_hot'?'hot':p.bucket==='verification_pool'?'verify':''}">${esc(p.sales_priority||p.priority||'–')}</span></td><td><div class="company">${esc(p.company_name||'Компания не установлена')}</div><div class="muted">${esc(p.inn?'ИНН '+p.inn:'')}</div></td><td class="summary"><b>${esc(p.project_type||'–')}</b><div class="muted">${esc(p.project_summary||'')}</div></td><td>${esc(p.location||'–')}</td><td>${money(p.investment_rub)}</td><td>${esc(p.stage||'–')}</td><td>${esc(p.land_status||'–')}</td><td>${esc(p.recommended_action||'–')}</td></tr>`).join('')}
-async function openProject(id){document.getElementById('modal').classList.add('open');let p=await fetch('/projects/'+id).then(r=>r.json());let contacts=(p.contacts||[]).map(c=>`<div class="contact"><b>${esc(c.name||'Корпоративный контакт')}</b> – ${esc(c.role||'')}<br>${esc(c.email||'')} ${esc(c.phone||'')}<br><a href="${esc(c.source_url)}" target="_blank">источник</a></div>`).join('')||'<span class="muted">Контакты пока не подтверждены</span>';let sources=(p.sources||[]).map(s=>`<div><a href="${esc(s.url)}" target="_blank">${esc(s.title||s.domain||s.url)}</a></div>`).join('');document.getElementById('detail').innerHTML=`<h2>${esc(p.company_name||p.project_type||'Проект')}</h2><div class="grid"><div class="card"><b>Sales Score</b><div class="score">${p.sales_score??'–'} / 100</div></div><div class="card"><b>Project Score</b><div class="score">${p.project_score??p.lead_score??'–'} / 100</div></div><div class="card wide"><b>Проект</b><p>${esc(p.project_summary||'–')}</p><div>${esc(p.location||'–')} – ${money(p.investment_rub)}</div></div><div class="card"><b>Компания</b><p>${esc(p.company_name||'Не установлена')}</p><div>${esc(p.legal_name||'')}</div><div>${esc(p.inn?'ИНН '+p.inn:'')} ${esc(p.ogrn?'ОГРН '+p.ogrn:'')}</div>${p.website?`<a href="${esc(p.website)}" target="_blank">Сайт</a>`:''}</div><div class="card"><b>Статус</b><p>${esc(p.bucket)} – ${esc(p.sales_priority||p.priority||'')}</p><div>Этап: ${esc(p.stage||'–')}</div><div>Земля: ${esc(p.land_status||'–')}</div><div>Действие: ${esc(p.recommended_action||'–')}</div></div><div class="card wide"><b>Контакты</b>${contacts}</div><div class="card wide"><b>Источники</b>${sources}</div></div>`}
+function render(ps){document.getElementById('sAll').textContent=ps.length;document.getElementById('sActive').textContent=ps.filter(x=>x.bucket==='active').length;document.getElementById('sHot').textContent=ps.filter(x=>['A_hot','B_work'].includes(x.sales_priority)).length;document.getElementById('sVerify').textContent=ps.filter(x=>x.bucket==='verification_pool').length;document.getElementById('rows').innerHTML=ps.map(p=>`<tr class="click" onclick="openProject('${p.id}')"><td class="score">${p.sales_score??'–'}</td><td>${p.project_score??p.lead_score??'–'}</td><td><span class="badge ${p.sales_priority==='A_hot'?'hot':p.bucket==='verification_pool'?'verify':''}">${priorityLabel(p.sales_priority||p.priority)}</span></td><td><div class="company">${esc(p.company_name||'Компания не установлена')}</div><div class="muted">${esc(p.inn?'ИНН '+p.inn:'')}</div></td><td class="summary"><b>${esc(p.project_type||'–')}</b><div class="muted">${esc(p.project_summary||'')}</div></td><td>${esc(p.location||'–')}</td><td>${money(p.investment_rub)}</td><td>${stageLabel(p.stage)}</td><td>${landLabel(p.land_status)}</td><td>${actionLabel(p.recommended_action)}</td></tr>`).join('')}
+async function openProject(id){document.getElementById('modal').classList.add('open');let p=await fetch('/projects/'+id).then(r=>r.json());let contacts=(p.contacts||[]).map(c=>`<div class="contact"><b>${esc(c.name||'Корпоративный контакт')}</b> – ${esc(c.role||'')}<br>${esc(c.email||'')} ${esc(c.phone||'')}<br><a href="${esc(c.source_url)}" target="_blank">источник</a></div>`).join('')||'<span class="muted">Подтверждённые контакты пока не найдены</span>';let sources=(p.sources||[]).map(s=>`<div><a href="${esc(s.url)}" target="_blank">${esc(s.title||s.domain||s.url)}</a></div>`).join('');document.getElementById('detail').innerHTML=`<h2>${esc(p.company_name||p.project_type||'Проект')}</h2><div class="grid"><div class="card"><b>Sales Score – готовность лида к продаже</b><div class="score">${p.sales_score??'–'} / 100</div></div><div class="card"><b>Project Score – соответствие нашим услугам</b><div class="score">${p.project_score??p.lead_score??'–'} / 100</div></div><div class="card wide"><b>Что происходит</b><p>${esc(p.project_summary||'–')}</p><div>${esc(p.location||'–')} – ${money(p.investment_rub)}</div></div><div class="card"><b>Компания</b><p>${esc(p.company_name||'Не установлена')}</p><div>${esc(p.legal_name||'')}</div><div>${esc(p.inn?'ИНН '+p.inn:'')} ${esc(p.ogrn?'ОГРН '+p.ogrn:'')}</div>${p.website?`<a href="${esc(p.website)}" target="_blank">Сайт</a>`:''}</div><div class="card"><b>Коммерческий статус</b><p>${esc(p.bucket)} – ${esc(p.sales_priority||p.priority||'')}</p><div>Этап: ${esc(p.stage||'–')}</div><div>Земля: ${esc(p.land_status||'–')}</div><div>Действие: ${esc(p.recommended_action||'–')}</div></div><div class="card wide"><b>ЛПР и контакты</b>${contacts}</div><div class="card wide"><b>Источники</b>${sources}</div></div>`}
 function closeModal(){document.getElementById('modal').classList.remove('open')}
-async function startRun(){let b=document.getElementById('runBtn');b.disabled=true;document.getElementById('runStatus').textContent='Поиск запущен…';try{let x=await fetch('/projects/search-runs/start',{method:'POST'}).then(r=>r.json());poll(x.task_id)}catch(e){document.getElementById('runStatus').textContent='Ошибка запуска';b.disabled=false}}
+async function startRun(){let b=document.getElementById('runBtn');b.disabled=true;document.getElementById('runStatus').textContent='Идёт поиск новых лидов…';try{let x=await fetch('/projects/search-runs/start',{method:'POST'}).then(r=>r.json());poll(x.task_id)}catch(e){document.getElementById('runStatus').textContent='Не удалось запустить поиск';b.disabled=false}}
 async function poll(id){let x=await fetch('/projects/tasks/'+id).then(r=>r.json());document.getElementById('runStatus').textContent='Поиск: '+x.status;if(['SUCCESS','FAILURE'].includes(x.status)){document.getElementById('runBtn').disabled=false;if(x.status==='SUCCESS')load();return}setTimeout(()=>poll(id),4000)}
 load();
 </script></body></html>'''
