@@ -49,6 +49,20 @@ NO_CONCRETE_PROJECT_MARKERS = (
     "а не подтверждённый инвестиционный проект",
 )
 
+GENERIC_AGGREGATOR_MARKERS = (
+    "инвестиционно-строительная активность",
+    "обзор инвестиционных проектов",
+    "перечень проектов",
+    "список проектов",
+)
+
+MULTI_PROJECT_AMBIGUITY_MARKERS = (
+    "также в материале указан",
+    "также указан завод",
+    "несколько проектов",
+    "два проекта",
+)
+
 
 def _q(item: dict[str, Any]) -> dict[str, Any]:
     return item.get("qualification") or {}
@@ -93,6 +107,8 @@ def _lacks_concrete_project(item: dict[str, Any]) -> bool:
     if any(marker in text for marker in NO_CONCRETE_PROJECT_MARKERS):
         return True
 
+    # A listing/marketplace page with an early signal but no concrete
+    # investee/project identity should not enter the active CRM automatically.
     if (
         _looks_like_catalog(item)
         and q.get("signal_status") != "confirmed_project"
@@ -142,6 +158,12 @@ def classify_lead(item: dict[str, Any]) -> dict[str, Any]:
 
     if _lacks_concrete_project(item):
         verification_reasons.append("concrete_project_not_confirmed")
+
+    if any(marker in text for marker in GENERIC_AGGREGATOR_MARKERS):
+        verification_reasons.append("generic_aggregator_page")
+
+    if any(marker in text for marker in MULTI_PROJECT_AMBIGUITY_MARKERS):
+        verification_reasons.append("multiple_projects_not_separated")
 
     if qualification.get("company_name"):
         active_reasons.append("company_known")

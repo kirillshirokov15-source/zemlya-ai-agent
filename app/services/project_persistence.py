@@ -113,7 +113,38 @@ CREATE TABLE IF NOT EXISTS lead_project_history (
 
 CREATE INDEX IF NOT EXISTS ix_lead_project_history_project_id_changed_at
     ON lead_project_history(project_id, changed_at DESC);
+
+CREATE TABLE IF NOT EXISTS lead_project_contacts (
+    id UUID PRIMARY KEY,
+    project_id UUID NOT NULL REFERENCES lead_projects(id) ON DELETE CASCADE,
+    name TEXT,
+    role TEXT,
+    email TEXT,
+    phone TEXT,
+    profile_url TEXT,
+    source_url TEXT NOT NULL,
+    confidence TEXT,
+    first_seen_at TIMESTAMPTZ NOT NULL,
+    last_seen_at TIMESTAMPTZ NOT NULL,
+    UNIQUE(project_id, source_url, name, role, email, phone)
+);
+
+CREATE INDEX IF NOT EXISTS ix_lead_project_contacts_project_id
+    ON lead_project_contacts(project_id);
 """
+
+SCHEMA_UPGRADES = [
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS project_score INTEGER",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS sales_score INTEGER",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS sales_priority TEXT",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS resolved_company_name TEXT",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS legal_name TEXT",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS inn TEXT",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS ogrn TEXT",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS website TEXT",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS enrichment_status TEXT",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS last_enriched_at TIMESTAMPTZ",
+]
 
 
 PROJECT_FIELDS = (
@@ -128,7 +159,16 @@ PROJECT_FIELDS = (
     "signal_status",
     "confidence",
     "lead_score",
+    "project_score",
+    "sales_score",
     "priority",
+    "sales_priority",
+    "resolved_company_name",
+    "legal_name",
+    "inn",
+    "ogrn",
+    "website",
+    "enrichment_status",
     "recommended_action",
 )
 
@@ -137,6 +177,8 @@ def ensure_schema() -> None:
     engine = _engine()
     with engine.begin() as conn:
         conn.exec_driver_sql(DDL)
+        for statement in SCHEMA_UPGRADES:
+            conn.exec_driver_sql(statement)
 
 
 def _norm(value: Any) -> str:
@@ -287,6 +329,8 @@ def upsert_project(
 
     payload = dict(project)
     payload["bucket"] = bucket
+    enrichment = payload.get("enrichment") or {}
+    payload["enrichment_status"] = enrichment.get("status")
 
     fingerprint = _fingerprint(payload)
     snapshot = _snapshot(payload)
@@ -321,7 +365,17 @@ def upsert_project(
                         signal_status = :signal_status,
                         confidence = :confidence,
                         lead_score = :lead_score,
+                        project_score = :project_score,
+                        sales_score = :sales_score,
                         priority = :priority,
+                        sales_priority = :sales_priority,
+                        resolved_company_name = :resolved_company_name,
+                        legal_name = :legal_name,
+                        inn = :inn,
+                        ogrn = :ogrn,
+                        website = :website,
+                        enrichment_status = :enrichment_status,
+                        last_enriched_at = CASE WHEN :enrichment_status IS NOT NULL THEN :last_seen_at ELSE last_enriched_at END,
                         recommended_action = :recommended_action,
                         last_seen_at = :last_seen_at,
                         last_search_run_id = CAST(:last_search_run_id AS uuid),
@@ -375,14 +429,19 @@ def upsert_project(
                         id, fingerprint, bucket, company_name, project_type,
                         project_summary, location, investment_rub, stage,
                         land_status, signal_status, confidence, lead_score,
-                        priority, recommended_action, first_seen_at,
+                        project_score, sales_score, priority, sales_priority,
+                        resolved_company_name, legal_name, inn, ogrn, website, enrichment_status, last_enriched_at,
+                        recommended_action, first_seen_at,
                         last_seen_at, last_search_run_id, is_active, raw
                     )
                     VALUES (
                         CAST(:id AS uuid), :fingerprint, :bucket,
                         :company_name, :project_type, :project_summary,
                         :location, :investment_rub, :stage, :land_status,
-                        :signal_status, :confidence, :lead_score, :priority,
+                        :signal_status, :confidence, :lead_score, :project_score,
+                        :sales_score, :priority, :sales_priority, :resolved_company_name, :legal_name, :inn,
+                        :ogrn, :website, :enrichment_status,
+                        CASE WHEN :enrichment_status IS NOT NULL THEN :first_seen_at ELSE NULL END,
                         :recommended_action, :first_seen_at, :last_seen_at,
                         CAST(:last_search_run_id AS uuid), TRUE,
                         CAST(:raw AS jsonb)
@@ -472,6 +531,42 @@ def upsert_project(
                 },
             )
 
+        enrichment = project.get("enrichment") or {}
+        for contact in enrichment.get("contacts") or []:
+            if not isinstance(contact, dict) or not contact.get("source_url"):
+                continue
+            conn.execute(
+                text("""
+                    INSERT INTO lead_project_contacts (
+                        id, project_id, name, role, email, phone, profile_url,
+                        source_url, confidence, first_seen_at, last_seen_at
+                    )
+                    VALUES (
+                        CAST(:id AS uuid), CAST(:project_id AS uuid),
+                        :name, :role, :email, :phone, :profile_url,
+                        :source_url, :confidence, :first_seen_at, :last_seen_at
+                    )
+                    ON CONFLICT (project_id, source_url, name, role, email, phone)
+                    DO UPDATE SET
+                        profile_url = EXCLUDED.profile_url,
+                        confidence = EXCLUDED.confidence,
+                        last_seen_at = EXCLUDED.last_seen_at
+                """),
+                {
+                    "id": str(uuid.uuid4()),
+                    "project_id": project_id,
+                    "name": contact.get("name"),
+                    "role": contact.get("role"),
+                    "email": contact.get("email"),
+                    "phone": contact.get("phone"),
+                    "profile_url": contact.get("profile_url"),
+                    "source_url": contact.get("source_url"),
+                    "confidence": contact.get("confidence"),
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                },
+            )
+
     return project_id
 
 
@@ -506,7 +601,16 @@ def persist_pipeline_results(
             "signal_status": q.get("signal_status"),
             "confidence": q.get("confidence"),
             "lead_score": None,
+            "project_score": None,
+            "sales_score": None,
             "priority": None,
+            "sales_priority": None,
+            "resolved_company_name": None,
+            "legal_name": None,
+            "inn": None,
+            "ogrn": None,
+            "website": None,
+            "enrichment": {"status": "not_run", "contacts": []},
             "recommended_action": "manual_verification",
             "sources": [{
                 "title": item.get("title"),
@@ -543,6 +647,8 @@ def list_projects(
     *,
     bucket: str | None = None,
     min_score: int | None = None,
+    min_sales_score: int | None = None,
+    sales_priority: str | None = None,
     stage: str | None = None,
     company: str | None = None,
     project_type: str | None = None,
@@ -560,11 +666,17 @@ def list_projects(
     if min_score is not None:
         clauses.append("COALESCE(lead_score, 0) >= :min_score")
         params["min_score"] = min_score
+    if min_sales_score is not None:
+        clauses.append("COALESCE(sales_score, 0) >= :min_sales_score")
+        params["min_sales_score"] = min_sales_score
+    if sales_priority:
+        clauses.append("sales_priority = :sales_priority")
+        params["sales_priority"] = sales_priority
     if stage:
         clauses.append("stage = :stage")
         params["stage"] = stage
     if company:
-        clauses.append("company_name ILIKE :company")
+        clauses.append("COALESCE(resolved_company_name, company_name) ILIKE :company")
         params["company"] = f"%{company}%"
     if project_type:
         clauses.append("project_type ILIKE :project_type")
@@ -574,7 +686,9 @@ def list_projects(
         SELECT
             id::text AS id,
             bucket,
-            company_name,
+            COALESCE(resolved_company_name, company_name) AS company_name,
+            company_name AS source_company_name,
+            resolved_company_name,
             project_type,
             project_summary,
             location,
@@ -584,7 +698,15 @@ def list_projects(
             signal_status,
             confidence,
             lead_score,
+            project_score,
+            sales_score,
             priority,
+            sales_priority,
+            legal_name,
+            inn,
+            ogrn,
+            website,
+            enrichment_status,
             recommended_action,
             first_seen_at,
             last_seen_at
@@ -592,6 +714,7 @@ def list_projects(
         WHERE {' AND '.join(clauses)}
         ORDER BY
             CASE WHEN bucket = 'active' THEN 0 ELSE 1 END,
+            sales_score DESC NULLS LAST,
             lead_score DESC NULLS LAST,
             last_seen_at DESC
         LIMIT :limit OFFSET :offset
@@ -610,7 +733,9 @@ def get_project(project_id: str) -> dict[str, Any] | None:
                 SELECT
                     id::text AS id,
                     bucket,
-                    company_name,
+                    COALESCE(resolved_company_name, company_name) AS company_name,
+                    company_name AS source_company_name,
+                    resolved_company_name,
                     project_type,
                     project_summary,
                     location,
@@ -620,7 +745,16 @@ def get_project(project_id: str) -> dict[str, Any] | None:
                     signal_status,
                     confidence,
                     lead_score,
+                    project_score,
+                    sales_score,
                     priority,
+                    sales_priority,
+                    legal_name,
+                    inn,
+                    ogrn,
+                    website,
+                    enrichment_status,
+                    last_enriched_at,
                     recommended_action,
                     first_seen_at,
                     last_seen_at,
@@ -648,6 +782,20 @@ def get_project(project_id: str) -> dict[str, Any] | None:
             {"id": project_id},
         ).mappings().all()
 
+        contacts = conn.execute(
+            text("""
+                SELECT
+                    id::text AS id, name, role, email, phone, profile_url,
+                    source_url, confidence, first_seen_at, last_seen_at
+                FROM lead_project_contacts
+                WHERE project_id = CAST(:id AS uuid)
+                ORDER BY
+                    CASE WHEN email IS NOT NULL OR phone IS NOT NULL THEN 0 ELSE 1 END,
+                    last_seen_at DESC
+            """),
+            {"id": project_id},
+        ).mappings().all()
+
         history = conn.execute(
             text("""
                 SELECT
@@ -664,8 +812,26 @@ def get_project(project_id: str) -> dict[str, Any] | None:
 
     result = dict(project)
     result["sources"] = [dict(x) for x in sources]
+    result["contacts"] = [dict(x) for x in contacts]
     result["history"] = [dict(x) for x in history]
     return result
+
+
+def get_search_run(run_id: str) -> dict[str, Any] | None:
+    ensure_schema()
+    with _engine().connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT
+                    id::text AS id, started_at, finished_at, status, queries_used,
+                    discovered_count, extracted_count, qualified_count,
+                    active_count, verification_count, rejected_count, metadata
+                FROM lead_search_runs
+                WHERE id = CAST(:id AS uuid)
+            """),
+            {"id": run_id},
+        ).mappings().first()
+    return dict(row) if row else None
 
 
 def list_search_runs(limit: int = 50) -> list[dict[str, Any]]:

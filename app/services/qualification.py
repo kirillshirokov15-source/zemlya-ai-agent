@@ -188,69 +188,104 @@ def _extract_context_years(text: str) -> list[int]:
 
     return years
 
+PROJECT_DATE_CONTEXT_MARKERS = (
+    "проект", "строител", "инвест", "производств", "завод", "цех",
+    "площадк", "участок", "планирует", "планируется", "начнет", "начнёт",
+    "запуск", "ввод", "реализац", "резидент", "комплекс",
+)
+
+DATE_NOISE_MARKERS = (
+    "свидетельство о регистрации", "реестровый номер", "зарегистрирован",
+    "постановление", "федеральный закон", "политика", "©", "основано",
+    "огрн", "выдано", "регистрации сми", "учредител",
+)
+
+
+def _contextual_dates(text: str) -> list[tuple[date, str]]:
+    found: list[tuple[date, str]] = []
+    for pattern in (RU_DATE_PATTERN, EN_DATE_PATTERN, DOT_DATE_PATTERN, ISO_DATE_PATTERN):
+        for match in pattern.finditer(text):
+            window = text[max(0, match.start() - 140): min(len(text), match.end() + 140)].lower()
+            if any(noise in window for noise in DATE_NOISE_MARKERS):
+                continue
+            if not any(marker in window for marker in PROJECT_DATE_CONTEXT_MARKERS):
+                continue
+            parsed = _extract_dates(match.group(0))
+            for value in parsed:
+                found.append((value, window[:280]))
+    return found
+
+
+def _parse_published_date(value: Any) -> list[date]:
+    if not value:
+        return []
+    return _extract_dates(str(value))
+
+
 def deterministic_prefilter(item: dict[str, Any], days_back: int = 180) -> dict[str, Any]:
     title = item.get("title") or ""
     content = item.get("content") or ""
     raw_url = item.get("url") or ""
     url = raw_url.lower()
+    published_date = item.get("published_date")
 
-    # Date analysis deliberately includes URL because many media sites
-    # encode publication dates in their path even when Tavily returns
-    # published_date=null and the snippet itself omits the date.
     text = f"{title}\n{content}".lower()
-    date_text = f"{title}\n{content}\n{unquote(raw_url)}".lower()
-
     reasons: list[str] = []
 
     if any(x in url for x in EXCLUDED_URL_HINTS):
         reasons.append("excluded_domain")
-
     if not any(x in text for x in PROJECT_HINTS):
         reasons.append("no_project_signal")
-
     if "жилой комплекс" in text or re.search(r"\bжк\b", text):
         reasons.append("residential")
-
     if "азс" in text or "автозаправ" in text:
         reasons.append("gas_station")
 
-    explicit_dates = _extract_dates(date_text)
-    explicit_dates.extend(_extract_dates_from_url(raw_url))
+    # Freshness v2: only high-confidence publication/project dates can move a
+    # candidate to reserve. Incidental legal/footer/founding dates are ignored.
+    date_candidates: list[tuple[date, str, str]] = []
+    for d in _parse_published_date(published_date):
+        date_candidates.append((d, "published_date", str(published_date)))
+    for d in _extract_dates(title):
+        date_candidates.append((d, "title", title[:300]))
+    for d in _extract_dates_from_url(raw_url):
+        date_candidates.append((d, "url", raw_url[:300]))
+    for d, evidence in _contextual_dates(content):
+        date_candidates.append((d, "project_context", evidence))
 
-    # Remove duplicates while keeping proper date objects.
-    explicit_dates = list(set(explicit_dates))
+    unique: dict[date, tuple[str, str]] = {}
+    for d, source, evidence in date_candidates:
+        current = unique.get(d)
+        priority = {"published_date": 4, "url": 3, "title": 2, "project_context": 1}
+        if current is None or priority[source] > priority[current[0]]:
+            unique[d] = (source, evidence)
 
     cutoff = date.today() - timedelta(days=days_back)
-    newest_date = max(explicit_dates) if explicit_dates else None
+    newest_date = max(unique) if unique else None
+    newest_source = unique.get(newest_date) if newest_date else None
 
     if newest_date and newest_date < cutoff:
         reasons.append("stale_date_detected")
 
-    context_years = _extract_context_years(date_text)
-    newest_context_year = max(context_years) if context_years else None
-
-    # Context year is used when we did not extract a precise date.
-    # Example: "начало строительства намечено на весну 2008 года".
+    # Year-only freshness is deliberately conservative. We only inspect the
+    # title because body years often describe future milestones or history.
+    title_context_years = _extract_context_years(title.lower())
+    newest_context_year = max(title_context_years) if title_context_years else None
     if not newest_date and newest_context_year and newest_context_year < date.today().year - 1:
         reasons.append("stale_year_context_detected")
 
-    stale = (
-        "stale_date_detected" in reasons
-        or "stale_year_context_detected" in reasons
-    )
+    stale = "stale_date_detected" in reasons or "stale_year_context_detected" in reasons
+    blocking = ["excluded_domain", "no_project_signal", "residential", "gas_station"]
+    hard_reject = any(x in reasons for x in blocking) or stale
+    reserve_candidate = stale and not any(x in reasons for x in blocking)
 
-    hard_reject = any(x in reasons for x in [
-        "excluded_domain",
-        "no_project_signal",
-        "residential",
-        "gas_station",
-        "stale_date_detected",
-        "stale_year_context_detected",
-    ])
-
-    reserve_candidate = stale and not any(x in reasons for x in [
-        "excluded_domain", "no_project_signal", "residential", "gas_station"
-    ])
+    date_evidence = []
+    if newest_date and newest_source:
+        date_evidence.append({
+            "date": newest_date.isoformat(),
+            "source": newest_source[0],
+            "context": newest_source[1],
+        })
 
     return {
         "hard_reject": hard_reject,
@@ -259,6 +294,8 @@ def deterministic_prefilter(item: dict[str, Any], days_back: int = 180) -> dict[
         "newest_detected_date": newest_date.isoformat() if newest_date else None,
         "newest_context_year": newest_context_year,
         "cutoff_date": cutoff.isoformat(),
+        "date_confidence": "high" if newest_date else ("medium" if newest_context_year else "unknown"),
+        "date_evidence": date_evidence,
     }
 
 def _excluded_result(item: dict[str, Any], prefilter: dict[str, Any]) -> dict[str, Any]:
