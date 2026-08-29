@@ -9,7 +9,6 @@ from openai import OpenAI
 
 
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
-client = OpenAI()
 
 MAX_EXTRACTED_PROJECTS_PER_SOURCE = 8
 
@@ -126,6 +125,26 @@ MULTI_TEXT_MARKERS = (
 )
 
 
+GENERIC_PAGE_MARKERS = (
+    "инвестиционно-строительная активность",
+    "инвестиционная активность",
+    "обзор инвестиционных проектов",
+    "перечень инвестиционных проектов",
+    "реестр инвестиционных проектов",
+    "каталог проектов",
+    "каталог объектов",
+    "подборка проектов",
+)
+
+MULTI_ENTITY_PATTERNS = (
+    r"\bзавод\w*\b",
+    r"\bфабрик\w*\b",
+    r"\bпроизводств\w*\b",
+    r"\bинвестор\w*\b",
+    r"\bкомпан\w*\b",
+)
+
+
 def _looks_like_multi_or_generic(item: dict[str, Any]) -> bool:
     title = (item.get("title") or "").lower()
     url = (item.get("url") or "").lower()
@@ -138,6 +157,19 @@ def _looks_like_multi_or_generic(item: dict[str, Any]) -> bool:
         return True
 
     if any(marker in content for marker in MULTI_TEXT_MARKERS):
+        return True
+
+    if any(marker in title or marker in content[:6000] for marker in GENERIC_PAGE_MARKERS):
+        return True
+
+    # Full pages often contain several projects without explicit "first/second"
+    # wording. Multiple distinct industrial object terms are enough to force
+    # atomic extraction instead of unsafe passthrough.
+    object_hits = sum(
+        len(re.findall(pattern, content[:20000]))
+        for pattern in MULTI_ENTITY_PATTERNS
+    )
+    if object_hits >= 10:
         return True
 
     # Repeated project/company language is a useful signal that a search result
@@ -159,6 +191,11 @@ def _extract_with_llm(item: dict[str, Any]) -> dict[str, Any]:
         "content": item.get("content"),
         "published_date": item.get("published_date"),
     }
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+    client = OpenAI(api_key=api_key)
 
     response = client.responses.create(
         model=MODEL,

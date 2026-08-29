@@ -101,6 +101,19 @@ def _domain(url: str | None) -> str:
         return ""
 
 
+TRUSTED_SOURCE_DOMAINS = (
+    "mosreg.ru",
+    "gov.ru",
+    "tass.ru",
+    "ria.ru",
+    "interfax.ru",
+)
+
+def _is_trusted_source(url: str | None) -> bool:
+    domain = _domain(url)
+    return any(domain == d or domain.endswith("." + d) for d in TRUSTED_SOURCE_DOMAINS)
+
+
 def _source_points(url: str | None) -> int:
     domain = _domain(url)
     for known, points in SOURCE_POINTS.items():
@@ -217,9 +230,14 @@ def score_candidate(item: dict[str, Any]) -> dict[str, Any]:
 
     integrity_ok, integrity_ratio = _content_integrity(item)
     if not integrity_ok:
-        quality_reject_reasons.append(
-            f"title_content_mismatch:{integrity_ratio:.2f}"
-        )
+        if _is_trusted_source(item.get("url")):
+            reasons.append(
+                f"trusted_source_title_content_mismatch:review:{integrity_ratio:.2f}"
+            )
+        else:
+            quality_reject_reasons.append(
+                f"title_content_mismatch:{integrity_ratio:.2f}"
+            )
 
     tavily_score = item.get("score")
     if isinstance(tavily_score, (int, float)):

@@ -2,6 +2,7 @@ import asyncio
 
 from app.worker import celery_app
 from app.services.tavily_search import run_default_discovery
+from app.services.page_enrichment import enrich_search_results_with_full_pages_sync
 from app.services.project_extraction import extract_atomic_projects
 from app.services.candidate_ranking import rank_candidates
 from app.services.qualification import qualify_results
@@ -58,23 +59,25 @@ def qualification_discovery_test():
     search_run_id = create_search_run(
         queries_used=discovery["queries_used"],
         discovered_count=discovery["unique_results"],
-        metadata={"task": "qualification.discovery_test", "pipeline_version": "product-v2"},
+        metadata={"task": "qualification.discovery_test", "pipeline_version": "quality-v4"},
     )
 
     try:
-        extraction = extract_atomic_projects(discovery["results"], max_llm_sources=12)
-        ranking = rank_candidates(extraction["results"], max_selected=35, minimum_score=20)
-        qualification = qualify_results(ranking["selected"], max_llm_items=35)
-        lead_gate = gate_qualified_results(qualification["qualified"])
+        page_enrichment = enrich_search_results_with_full_pages_sync(
+            discovery["results"], max_urls=45, extract_depth="basic"
+        )
+        extraction = extract_atomic_projects(page_enrichment["results"], max_llm_sources=20)
+        ranking = rank_candidates(extraction["results"], max_selected=40, minimum_score=20)
+        qualification = qualify_results(ranking["selected"], max_llm_items=40)
+        temporally_qualified = assess_temporal_projects(qualification["qualified"])
+        lead_gate = gate_qualified_results(temporally_qualified)
         deduplication = deduplicate_qualified_projects(lead_gate["active"])
 
         # Project-fit score remains independent from contactability.
         project_scoring = score_projects(deduplication["projects"])
-        temporally_assessed = assess_temporal_projects(project_scoring["projects"])
-
         # Resolve investor/company and public contacts only for stronger leads.
         enrichment = enrich_projects(
-            temporally_assessed,
+            project_scoring["projects"],
             max_projects=10,
             min_project_score=45,
         )
@@ -99,16 +102,23 @@ def qualification_discovery_test():
                 "below_threshold_count": ranking["below_threshold_count"],
                 "enrichment_processed": enrichment["processed_count"],
                 "enrichment_resolved": enrichment["resolved_count"],
-                "pipeline_version": "product-v2",
+                "pipeline_version": "quality-v4",
             },
         )
 
         return {
             "search_run_id": search_run_id,
-            "pipeline_version": "product-v2",
+            "pipeline_version": "quality-v4",
             "discovery": {
                 "queries_used": discovery["queries_used"],
                 "unique_results": discovery["unique_results"],
+            },
+            "page_enrichment": {
+                "urls_requested": page_enrichment["urls_requested"],
+                "full_page_success_count": page_enrichment["full_page_success_count"],
+                "snippet_fallback_count": page_enrichment["snippet_fallback_count"],
+                "failed_batches": page_enrichment["failed_batches"],
+                "extract_depth": page_enrichment["extract_depth"],
             },
             "extraction": {
                 "input_sources_count": extraction["input_sources_count"],
@@ -170,7 +180,7 @@ def qualification_discovery_test():
             metadata_patch={
                 "error_type": type(exc).__name__,
                 "error": str(exc)[:2000],
-                "pipeline_version": "product-v2",
+                "pipeline_version": "quality-v4",
             },
         )
         raise

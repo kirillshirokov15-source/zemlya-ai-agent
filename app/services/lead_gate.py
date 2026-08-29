@@ -165,6 +165,17 @@ def classify_lead(item: dict[str, Any]) -> dict[str, Any]:
     if any(marker in text for marker in MULTI_PROJECT_AMBIGUITY_MARKERS):
         verification_reasons.append("multiple_projects_not_separated")
 
+    temporal = item.get("temporal_quality") or {}
+    if temporal.get("needs_current_status_check"):
+        verification_reasons.append("current_project_status_needs_verification")
+
+    extraction = item.get("extraction") or {}
+    if extraction.get("source_type") in {
+        "extraction_budget_passthrough",
+        "extraction_error_passthrough",
+    }:
+        verification_reasons.append("source_not_fully_extracted")
+
     if qualification.get("company_name"):
         active_reasons.append("company_known")
 
