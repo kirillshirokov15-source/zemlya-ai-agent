@@ -9,6 +9,23 @@ from app.services.project_dedup import deduplicate_qualified_projects
 from app.services.lead_scoring import score_projects
 
 
+def _queue_view(item):
+    preq = item.get("prequalification") or {}
+    return {
+        "title": item.get("title"),
+        "url": item.get("url"),
+        "query": item.get("query"),
+        "search_score": item.get("score"),
+        "prequalification_score": preq.get("score"),
+        "prequalification_reasons": preq.get("reasons", []),
+        "quality_reject_reasons": preq.get("quality_reject_reasons", []),
+        "title_content_integrity_ratio": preq.get(
+            "title_content_integrity_ratio"
+        ),
+        "extraction": item.get("extraction"),
+    }
+
+
 @celery_app.task(name="qualification.discovery_test")
 def qualification_discovery_test():
     discovery = asyncio.run(
@@ -26,9 +43,6 @@ def qualification_discovery_test():
         minimum_score=20,
     )
 
-    # Every selected candidate may reach the qualification LLM.
-    # Ranking has already made sure that the limited budget is spent
-    # on the strongest business candidates, rather than raw Tavily order.
     qualification = qualify_results(
         ranking["selected"],
         max_llm_items=35,
@@ -41,23 +55,6 @@ def qualification_discovery_test():
     scoring = score_projects(
         deduplication["projects"]
     )
-
-    deferred_queue = [
-        {
-            "title": item.get("title"),
-            "url": item.get("url"),
-            "query": item.get("query"),
-            "search_score": item.get("score"),
-            "prequalification_score": (
-                item.get("prequalification") or {}
-            ).get("score"),
-            "prequalification_reasons": (
-                item.get("prequalification") or {}
-            ).get("reasons", []),
-            "extraction": item.get("extraction"),
-        }
-        for item in ranking["deferred"]
-    ]
 
     return {
         "discovery": {
@@ -80,9 +77,15 @@ def qualification_discovery_test():
             "selected_count": ranking["selected_count"],
             "deferred_count": ranking["deferred_count"],
             "below_threshold_count": ranking["below_threshold_count"],
+            "quality_rejected_count": ranking["quality_rejected_count"],
             "max_selected": ranking["max_selected"],
             "minimum_score": ranking["minimum_score"],
-            "deferred_queue": deferred_queue,
+            "deferred_queue": [
+                _queue_view(x) for x in ranking["deferred"]
+            ],
+            "quality_rejected": [
+                _queue_view(x) for x in ranking["quality_rejected"]
+            ],
         },
         "qualification": qualification,
         "deduplication": deduplication,

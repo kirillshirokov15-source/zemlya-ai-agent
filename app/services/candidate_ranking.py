@@ -55,6 +55,9 @@ BAD_GENERIC_KEYWORDS = (
     "инвестпроекты почти на",
     "итоги года",
     "всего проектов",
+    "перечень индустриальных парков",
+    "промышленные предприятия московской области",
+    "карта индустриальных парков",
 )
 
 COMPLETE_KEYWORDS = (
@@ -67,12 +70,25 @@ COMPLETE_KEYWORDS = (
     "объект завершён",
 )
 
+PAUSED_KEYWORDS = (
+    "проект приостановлен",
+    "проект заморожен",
+    "реализация приостановлена",
+)
+
 EXCLUDED_KEYWORDS = (
     "жилой комплекс",
     "жк ",
     "азс",
     "автозаправ",
 )
+
+TITLE_STOPWORDS = {
+    "в", "на", "и", "по", "для", "из", "с", "со", "к", "от", "до", "за",
+    "под", "над", "при", "новый", "новая", "новое", "построят", "строительство",
+    "московской", "области", "подмосковье", "подмосковья", "рублей", "млрд",
+    "млн", "инвестиции", "проект", "проекты",
+}
 
 
 def _domain(url: str | None) -> str:
@@ -113,6 +129,79 @@ def _company_hint(item: dict[str, Any]) -> str | None:
     return None
 
 
+def _is_moscow_oblast(text: str, location_hint: Any) -> bool:
+    combined = text.lower()
+
+    if isinstance(location_hint, str):
+        combined += "\n" + location_hint.lower()
+
+    oblast_markers = (
+        "московская область",
+        "московской области",
+        "московскую область",
+        "подмосковье",
+        "подмосковья",
+        "подмосковный",
+        "подмосковного",
+    )
+    return any(marker in combined for marker in oblast_markers)
+
+
+def _is_moscow_city_only(item: dict[str, Any]) -> bool:
+    extraction = item.get("extraction") or {}
+    location = str(extraction.get("location_hint") or "").strip().lower()
+
+    # Explicit extracted location "Москва" is outside target geography.
+    if location in {"москва", "г. москва", "город москва"}:
+        return True
+
+    title = (item.get("title") or "").lower()
+    content = (item.get("content") or "").lower()
+
+    # A concrete project explicitly described as being "в Москве" is rejected
+    # unless Moscow Oblast is also explicitly tied to that same atomic item.
+    moscow_city = (
+        " в москве" in f" {title}"
+        or " в москве" in f" {content[:1200]}"
+        or "локация: москва" in content
+    )
+    oblast = _is_moscow_oblast(f"{title}\n{content[:1200]}", location)
+
+    return moscow_city and not oblast
+
+
+def _content_integrity(item: dict[str, Any]) -> tuple[bool, float]:
+    """
+    Detect obvious search-result/page-content mismatches.
+    We do not require perfect title repetition. We only reject when a concrete
+    project title has almost no meaningful lexical support in the fetched text.
+    """
+    title = (item.get("title") or "").lower()
+    content = (item.get("content") or "").lower()
+
+    if not title or not content:
+        return False, 0.0
+
+    tokens = {
+        token
+        for token in re.findall(r"[a-zа-яё0-9]{4,}", title)
+        if token not in TITLE_STOPWORDS
+    }
+
+    # Generic titles cannot be validated safely this way.
+    if len(tokens) < 2:
+        return True, 1.0
+
+    matched = sum(1 for token in tokens if token in content)
+    ratio = matched / len(tokens)
+
+    concrete_marker = _contains_any(title, PROJECT_KEYWORDS)
+    if concrete_marker and ratio < 0.20:
+        return False, ratio
+
+    return True, ratio
+
+
 def score_candidate(item: dict[str, Any]) -> dict[str, Any]:
     title = item.get("title") or ""
     content = item.get("content") or ""
@@ -121,8 +210,17 @@ def score_candidate(item: dict[str, Any]) -> dict[str, Any]:
 
     score = 0
     reasons: list[str] = []
+    quality_reject_reasons: list[str] = []
 
-    # Tavily is useful but should not dominate business priority.
+    if _is_moscow_city_only(item):
+        quality_reject_reasons.append("outside_target_region_moscow_city")
+
+    integrity_ok, integrity_ratio = _content_integrity(item)
+    if not integrity_ok:
+        quality_reject_reasons.append(
+            f"title_content_mismatch:{integrity_ratio:.2f}"
+        )
+
     tavily_score = item.get("score")
     if isinstance(tavily_score, (int, float)):
         pts = min(12, max(0, round(float(tavily_score) * 12)))
@@ -146,11 +244,7 @@ def score_candidate(item: dict[str, Any]) -> dict[str, Any]:
         reasons.append("company_known:+12")
 
     location_hint = extraction.get("location_hint")
-    if (
-        "московск" in text
-        or "подмосков" in text
-        or (isinstance(location_hint, str) and location_hint.strip())
-    ):
+    if _is_moscow_oblast(text, location_hint):
         score += 8
         reasons.append("moscow_region_signal:+8")
 
@@ -172,12 +266,16 @@ def score_candidate(item: dict[str, Any]) -> dict[str, Any]:
         reasons.append("atomic_extracted_project:+5")
 
     if _contains_any(text, BAD_GENERIC_KEYWORDS):
-        score -= 25
-        reasons.append("generic_article:-25")
+        score -= 30
+        reasons.append("generic_article_or_directory:-30")
 
     if _contains_any(text, COMPLETE_KEYWORDS):
         score -= 35
         reasons.append("likely_completed:-35")
+
+    if _contains_any(text, PAUSED_KEYWORDS):
+        score -= 25
+        reasons.append("paused_project:-25")
 
     if _contains_any(text, EXCLUDED_KEYWORDS):
         score -= 50
@@ -189,6 +287,9 @@ def score_candidate(item: dict[str, Any]) -> dict[str, Any]:
     result["prequalification"] = {
         "score": score,
         "reasons": reasons,
+        "quality_reject": bool(quality_reject_reasons),
+        "quality_reject_reasons": quality_reject_reasons,
+        "title_content_integrity_ratio": round(integrity_ratio, 3),
     }
     return result
 
@@ -200,7 +301,19 @@ def rank_candidates(
 ) -> dict[str, Any]:
     scored = [score_candidate(item) for item in items]
 
-    scored.sort(
+    quality_rejected = [
+        item
+        for item in scored
+        if (item.get("prequalification") or {}).get("quality_reject")
+    ]
+
+    usable = [
+        item
+        for item in scored
+        if not (item.get("prequalification") or {}).get("quality_reject")
+    ]
+
+    usable.sort(
         key=lambda x: (
             (x.get("prequalification") or {}).get("score") or 0,
             x.get("score") or 0,
@@ -210,12 +323,12 @@ def rank_candidates(
 
     eligible = [
         item
-        for item in scored
+        for item in usable
         if (item.get("prequalification") or {}).get("score", 0) >= minimum_score
     ]
     below_threshold = [
         item
-        for item in scored
+        for item in usable
         if (item.get("prequalification") or {}).get("score", 0) < minimum_score
     ]
 
@@ -228,9 +341,11 @@ def rank_candidates(
         "selected_count": len(selected),
         "deferred_count": len(deferred),
         "below_threshold_count": len(below_threshold),
+        "quality_rejected_count": len(quality_rejected),
         "max_selected": max_selected,
         "minimum_score": minimum_score,
         "selected": selected,
         "deferred": deferred,
         "below_threshold": below_threshold,
+        "quality_rejected": quality_rejected,
     }
