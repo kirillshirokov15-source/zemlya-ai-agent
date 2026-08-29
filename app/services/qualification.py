@@ -5,6 +5,7 @@ import os
 import re
 from datetime import date, timedelta
 from typing import Any
+from urllib.parse import unquote
 
 from openai import OpenAI
 from app.core.config import settings
@@ -34,6 +35,13 @@ MONTHS_EN = {
     "dec": 12, "december": 12,
 }
 
+SEASON_WORDS = (
+    "весна", "весной", "весну",
+    "лето", "летом",
+    "осень", "осенью",
+    "зима", "зимой", "зиму",
+)
+
 RU_DATE_PATTERN = re.compile(
     r"\b(\d{1,2})\s+(" + "|".join(MONTHS_RU.keys()) + r")\s+(20\d{2})\b",
     re.IGNORECASE,
@@ -42,12 +50,28 @@ EN_DATE_PATTERN = re.compile(
     r"\b(" + "|".join(MONTHS_EN.keys()) + r")\s+(\d{1,2}),?\s+(20\d{2})\b",
     re.IGNORECASE,
 )
-DOT_DATE_PATTERN = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(20\d{2})\b")
-ISO_DATE_PATTERN = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
+DOT_DATE_PATTERN = re.compile(r"\b(\d{1,2})[._/-](\d{1,2})[._/-](20\d{2})\b")
+ISO_DATE_PATTERN = re.compile(r"\b(20\d{2})[._/-](\d{1,2})[._/-](\d{1,2})\b")
+
 YEAR_CONTEXT_PATTERN = re.compile(
-    r"(?:к|в|на|до|с)\s+(20\d{2})\s*(?:году|г\.?)?",
+    r"(?:к|в|на|до|с|после|примерно\s+в)\s+"
+    r"(20\d{2})\s*(?:году|г\.?)?",
     re.IGNORECASE,
 )
+
+SEASON_YEAR_PATTERN = re.compile(
+    r"(?:на\s+)?(?:"
+    + "|".join(SEASON_WORDS)
+    + r")\s+(20\d{2})\s*(?:года|г\.?)?",
+    re.IGNORECASE,
+)
+
+# Dates frequently encoded in paths such as:
+# /50416_03.11.2022
+# /2024/10/23/article
+# /news-23-10-2024
+URL_DMY_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[._/-](\d{1,2})[._/-](20\d{2})(?!\d)")
+URL_YMD_PATTERN = re.compile(r"(?<!\d)(20\d{2})[._/-](\d{1,2})[._/-](\d{1,2})(?!\d)")
 
 QUALIFICATION_SCHEMA = {
     "type": "object",
@@ -82,7 +106,7 @@ QUALIFICATION_SCHEMA = {
     ],
 }
 
-SYSTEM_INSTRUCTIONS = '''
+SYSTEM_INSTRUCTIONS = """
 Ты квалифицируешь B2B-лиды для компании, которая помогает инвесторам
 подбирать и оформлять земельные участки под инвестиционные проекты
 в Московской области.
@@ -103,7 +127,7 @@ SYSTEM_INSTRUCTIONS = '''
 12. company_name указывай только если название явно есть в тексте.
 13. Если входной текст содержит старую дату, но prefilter не исключил материал,
     не считай проект актуальным без отдельного свежего подтверждения.
-'''
+"""
 
 def _safe_date(y: int, m: int, d: int) -> date | None:
     try:
@@ -113,66 +137,115 @@ def _safe_date(y: int, m: int, d: int) -> date | None:
 
 def _extract_dates(text: str) -> list[date]:
     out: list[date] = []
+
     for m in RU_DATE_PATTERN.finditer(text):
         value = _safe_date(int(m.group(3)), MONTHS_RU[m.group(2).lower()], int(m.group(1)))
         if value:
             out.append(value)
+
     for m in EN_DATE_PATTERN.finditer(text):
         value = _safe_date(int(m.group(3)), MONTHS_EN[m.group(1).lower()], int(m.group(2)))
         if value:
             out.append(value)
+
     for m in DOT_DATE_PATTERN.finditer(text):
         value = _safe_date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
         if value:
             out.append(value)
+
     for m in ISO_DATE_PATTERN.finditer(text):
         value = _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         if value:
             out.append(value)
+
+    return out
+
+def _extract_dates_from_url(url: str) -> list[date]:
+    decoded = unquote(url or "")
+    out: list[date] = []
+
+    for m in URL_DMY_PATTERN.finditer(decoded):
+        value = _safe_date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        if value:
+            out.append(value)
+
+    for m in URL_YMD_PATTERN.finditer(decoded):
+        value = _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if value:
+            out.append(value)
+
     return out
 
 def _extract_context_years(text: str) -> list[int]:
-    years = []
     current_year = date.today().year
-    for m in YEAR_CONTEXT_PATTERN.finditer(text):
-        year = int(m.group(1))
-        if 2000 <= year <= current_year + 10:
-            years.append(year)
+    years: list[int] = []
+
+    for pattern in (YEAR_CONTEXT_PATTERN, SEASON_YEAR_PATTERN):
+        for m in pattern.finditer(text):
+            year = int(m.group(1))
+            if 2000 <= year <= current_year + 10:
+                years.append(year)
+
     return years
 
 def deterministic_prefilter(item: dict[str, Any], days_back: int = 180) -> dict[str, Any]:
     title = item.get("title") or ""
     content = item.get("content") or ""
-    url = (item.get("url") or "").lower()
+    raw_url = item.get("url") or ""
+    url = raw_url.lower()
+
+    # Date analysis deliberately includes URL because many media sites
+    # encode publication dates in their path even when Tavily returns
+    # published_date=null and the snippet itself omits the date.
     text = f"{title}\n{content}".lower()
+    date_text = f"{title}\n{content}\n{unquote(raw_url)}".lower()
+
     reasons: list[str] = []
 
     if any(x in url for x in EXCLUDED_URL_HINTS):
         reasons.append("excluded_domain")
+
     if not any(x in text for x in PROJECT_HINTS):
         reasons.append("no_project_signal")
+
     if "жилой комплекс" in text or re.search(r"\bжк\b", text):
         reasons.append("residential")
+
     if "азс" in text or "автозаправ" in text:
         reasons.append("gas_station")
 
-    explicit_dates = _extract_dates(text)
+    explicit_dates = _extract_dates(date_text)
+    explicit_dates.extend(_extract_dates_from_url(raw_url))
+
+    # Remove duplicates while keeping proper date objects.
+    explicit_dates = list(set(explicit_dates))
+
     cutoff = date.today() - timedelta(days=days_back)
     newest_date = max(explicit_dates) if explicit_dates else None
 
     if newest_date and newest_date < cutoff:
         reasons.append("stale_date_detected")
 
-    context_years = _extract_context_years(text)
+    context_years = _extract_context_years(date_text)
     newest_context_year = max(context_years) if context_years else None
+
+    # Context year is used when we did not extract a precise date.
+    # Example: "начало строительства намечено на весну 2008 года".
     if not newest_date and newest_context_year and newest_context_year < date.today().year - 1:
         reasons.append("stale_year_context_detected")
 
-    stale = "stale_date_detected" in reasons or "stale_year_context_detected" in reasons
+    stale = (
+        "stale_date_detected" in reasons
+        or "stale_year_context_detected" in reasons
+    )
 
     hard_reject = any(x in reasons for x in [
-        "excluded_domain", "no_project_signal", "residential",
-        "gas_station", "stale_date_detected", "stale_year_context_detected",
+        "excluded_domain",
+        "no_project_signal",
+        "residential",
+        "gas_station",
+        "stale_date_detected",
+        "stale_year_context_detected",
     ])
 
     reserve_candidate = stale and not any(x in reasons for x in [
@@ -189,7 +262,11 @@ def deterministic_prefilter(item: dict[str, Any], days_back: int = 180) -> dict[
     }
 
 def _excluded_result(item: dict[str, Any], prefilter: dict[str, Any]) -> dict[str, Any]:
-    reason = "stale_project_for_reserve" if prefilter.get("reserve_candidate") else ", ".join(prefilter["prefilter_reasons"])
+    if prefilter.get("reserve_candidate"):
+        reason = "stale_project_for_reserve"
+    else:
+        reason = ", ".join(prefilter["prefilter_reasons"])
+
     return {
         **item,
         "prefilter": prefilter,
@@ -220,6 +297,7 @@ def qualify_result(item: dict[str, Any]) -> dict[str, Any]:
         return _excluded_result(item, prefilter)
 
     client = OpenAI(api_key=settings.openai_api_key)
+
     payload = {
         "title": item.get("title"),
         "url": item.get("url"),
@@ -252,8 +330,12 @@ def qualify_result(item: dict[str, Any]) -> dict[str, Any]:
         "qualification": json.loads(response.output_text),
     }
 
-def qualify_results(results: list[dict[str, Any]], max_llm_items: int = 20) -> dict[str, Any]:
+def qualify_results(
+    results: list[dict[str, Any]],
+    max_llm_items: int = 20,
+) -> dict[str, Any]:
     ordered = sorted(results, key=lambda x: x.get("score") or 0, reverse=True)
+
     output: list[dict[str, Any]] = []
     llm_used = 0
     stale_filtered = 0
@@ -267,6 +349,7 @@ def qualify_results(results: list[dict[str, Any]], max_llm_items: int = 20) -> d
                 stale_filtered += 1
             else:
                 hard_filtered += 1
+
             output.append(_excluded_result(item, prefilter))
             continue
 
@@ -287,7 +370,9 @@ def qualify_results(results: list[dict[str, Any]], max_llm_items: int = 20) -> d
                     "signal_status": "insufficient_data",
                     "exclusion_reason": "not_processed_in_llm_limit",
                     "needs_deep_verification": True,
-                    "verification_questions": ["Повторно обработать при расширенном лимите."],
+                    "verification_questions": [
+                        "Повторно обработать при расширенном лимите."
+                    ],
                     "evidence": [],
                 },
             })
@@ -296,8 +381,15 @@ def qualify_results(results: list[dict[str, Any]], max_llm_items: int = 20) -> d
         output.append(qualify_result(item))
         llm_used += 1
 
-    qualified = [x for x in output if x["qualification"]["relevant"]]
-    reserve = [x for x in output if x.get("prefilter", {}).get("reserve_candidate")]
+    qualified = [
+        x for x in output
+        if x["qualification"]["relevant"]
+    ]
+
+    reserve = [
+        x for x in output
+        if x.get("prefilter", {}).get("reserve_candidate")
+    ]
 
     return {
         "input_results": len(results),
