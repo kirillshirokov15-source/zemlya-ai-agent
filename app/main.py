@@ -15,6 +15,7 @@ app.include_router(health_router)
 app.include_router(tasks_router)
 app.include_router(discovery_router)
 app.include_router(qualification_router)
+app.include_router(projects_router)
 
 
 @app.get("/")
