@@ -478,13 +478,13 @@ def upsert_project(
 def persist_pipeline_results(
     *,
     search_run_id: str,
-    active_scored_lead_projects: list[dict[str, Any]],
+    active_scored_projects: list[dict[str, Any]],
     verification_items: list[dict[str, Any]],
 ) -> dict[str, Any]:
     active_ids = []
     verification_ids = []
 
-    for project in active_scored_lead_projects:
+    for project in active_scored_projects:
         active_ids.append(
             upsert_project(
                 project,
@@ -539,7 +539,7 @@ def persist_pipeline_results(
     }
 
 
-def list_lead_projects(
+def list_projects(
     *,
     bucket: str | None = None,
     min_score: int | None = None,
@@ -668,7 +668,7 @@ def get_project(project_id: str) -> dict[str, Any] | None:
     return result
 
 
-def list_lead_search_runs(limit: int = 50) -> list[dict[str, Any]]:
+def list_search_runs(limit: int = 50) -> list[dict[str, Any]]:
     ensure_schema()
     with _engine().connect() as conn:
         rows = conn.execute(
