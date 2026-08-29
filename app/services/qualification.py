@@ -12,18 +12,40 @@ from app.core.config import settings
 MODEL = os.getenv("OPENAI_QUALIFICATION_MODEL", "gpt-5.6-luna")
 
 EXCLUDED_URL_HINTS = ("roomfi.ru", "youtube.com", "youtu.be")
+
 PROJECT_HINTS = (
     "завод", "производств", "цех", "склад", "логистичес",
     "торговый центр", "тц ", "индустриальн", "технопарк",
     "площадк", "инвест", "резидент", "расшир",
 )
+
 MONTHS_RU = {
     "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
     "мая": 5, "июня": 6, "июля": 7, "августа": 8,
     "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
 }
+
+MONTHS_EN = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2,
+    "mar": 3, "march": 3, "apr": 4, "april": 4,
+    "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+
 RU_DATE_PATTERN = re.compile(
     r"\b(\d{1,2})\s+(" + "|".join(MONTHS_RU.keys()) + r")\s+(20\d{2})\b",
+    re.IGNORECASE,
+)
+EN_DATE_PATTERN = re.compile(
+    r"\b(" + "|".join(MONTHS_EN.keys()) + r")\s+(\d{1,2}),?\s+(20\d{2})\b",
+    re.IGNORECASE,
+)
+DOT_DATE_PATTERN = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(20\d{2})\b")
+ISO_DATE_PATTERN = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
+YEAR_CONTEXT_PATTERN = re.compile(
+    r"(?:к|в|на|до|с)\s+(20\d{2})\s*(?:году|г\.?)?",
     re.IGNORECASE,
 )
 
@@ -60,7 +82,7 @@ QUALIFICATION_SCHEMA = {
     ],
 }
 
-SYSTEM_INSTRUCTIONS = """
+SYSTEM_INSTRUCTIONS = '''
 Ты квалифицируешь B2B-лиды для компании, которая помогает инвесторам
 подбирать и оформлять земельные участки под инвестиционные проекты
 в Московской области.
@@ -79,23 +101,51 @@ SYSTEM_INSTRUCTIONS = """
 10. evidence — только факты, прямо присутствующие во входном тексте.
 11. project_summary — максимум 2 коротких предложения.
 12. company_name указывай только если название явно есть в тексте.
-"""
+13. Если входной текст содержит старую дату, но prefilter не исключил материал,
+    не считай проект актуальным без отдельного свежего подтверждения.
+'''
 
-def _extract_ru_dates(text: str) -> list[date]:
-    out = []
+def _safe_date(y: int, m: int, d: int) -> date | None:
+    try:
+        return date(y, m, d)
+    except ValueError:
+        return None
+
+def _extract_dates(text: str) -> list[date]:
+    out: list[date] = []
     for m in RU_DATE_PATTERN.finditer(text):
-        try:
-            out.append(date(int(m.group(3)), MONTHS_RU[m.group(2).lower()], int(m.group(1))))
-        except ValueError:
-            pass
+        value = _safe_date(int(m.group(3)), MONTHS_RU[m.group(2).lower()], int(m.group(1)))
+        if value:
+            out.append(value)
+    for m in EN_DATE_PATTERN.finditer(text):
+        value = _safe_date(int(m.group(3)), MONTHS_EN[m.group(1).lower()], int(m.group(2)))
+        if value:
+            out.append(value)
+    for m in DOT_DATE_PATTERN.finditer(text):
+        value = _safe_date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        if value:
+            out.append(value)
+    for m in ISO_DATE_PATTERN.finditer(text):
+        value = _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if value:
+            out.append(value)
     return out
+
+def _extract_context_years(text: str) -> list[int]:
+    years = []
+    current_year = date.today().year
+    for m in YEAR_CONTEXT_PATTERN.finditer(text):
+        year = int(m.group(1))
+        if 2000 <= year <= current_year + 10:
+            years.append(year)
+    return years
 
 def deterministic_prefilter(item: dict[str, Any], days_back: int = 180) -> dict[str, Any]:
     title = item.get("title") or ""
     content = item.get("content") or ""
     url = (item.get("url") or "").lower()
     text = f"{title}\n{content}".lower()
-    reasons = []
+    reasons: list[str] = []
 
     if any(x in url for x in EXCLUDED_URL_HINTS):
         reasons.append("excluded_domain")
@@ -106,23 +156,40 @@ def deterministic_prefilter(item: dict[str, Any], days_back: int = 180) -> dict[
     if "азс" in text or "автозаправ" in text:
         reasons.append("gas_station")
 
-    dates = _extract_ru_dates(text)
+    explicit_dates = _extract_dates(text)
     cutoff = date.today() - timedelta(days=days_back)
-    newest = max(dates) if dates else None
-    if newest and newest < cutoff:
+    newest_date = max(explicit_dates) if explicit_dates else None
+
+    if newest_date and newest_date < cutoff:
         reasons.append("stale_date_detected")
 
+    context_years = _extract_context_years(text)
+    newest_context_year = max(context_years) if context_years else None
+    if not newest_date and newest_context_year and newest_context_year < date.today().year - 1:
+        reasons.append("stale_year_context_detected")
+
+    stale = "stale_date_detected" in reasons or "stale_year_context_detected" in reasons
+
     hard_reject = any(x in reasons for x in [
+        "excluded_domain", "no_project_signal", "residential",
+        "gas_station", "stale_date_detected", "stale_year_context_detected",
+    ])
+
+    reserve_candidate = stale and not any(x in reasons for x in [
         "excluded_domain", "no_project_signal", "residential", "gas_station"
     ])
 
     return {
         "hard_reject": hard_reject,
+        "reserve_candidate": reserve_candidate,
         "prefilter_reasons": reasons,
-        "newest_detected_date": newest.isoformat() if newest else None,
+        "newest_detected_date": newest_date.isoformat() if newest_date else None,
+        "newest_context_year": newest_context_year,
+        "cutoff_date": cutoff.isoformat(),
     }
 
 def _excluded_result(item: dict[str, Any], prefilter: dict[str, Any]) -> dict[str, Any]:
+    reason = "stale_project_for_reserve" if prefilter.get("reserve_candidate") else ", ".join(prefilter["prefilter_reasons"])
     return {
         **item,
         "prefilter": prefilter,
@@ -137,7 +204,7 @@ def _excluded_result(item: dict[str, Any], prefilter: dict[str, Any]) -> dict[st
             "stage": "unknown",
             "land_status": "unknown",
             "signal_status": "exclude",
-            "exclusion_reason": ", ".join(prefilter["prefilter_reasons"]),
+            "exclusion_reason": reason,
             "needs_deep_verification": False,
             "verification_questions": [],
             "evidence": [],
@@ -187,12 +254,19 @@ def qualify_result(item: dict[str, Any]) -> dict[str, Any]:
 
 def qualify_results(results: list[dict[str, Any]], max_llm_items: int = 20) -> dict[str, Any]:
     ordered = sorted(results, key=lambda x: x.get("score") or 0, reverse=True)
-    output = []
+    output: list[dict[str, Any]] = []
     llm_used = 0
+    stale_filtered = 0
+    hard_filtered = 0
 
     for item in ordered:
         prefilter = deterministic_prefilter(item)
+
         if prefilter["hard_reject"]:
+            if prefilter.get("reserve_candidate"):
+                stale_filtered += 1
+            else:
+                hard_filtered += 1
             output.append(_excluded_result(item, prefilter))
             continue
 
@@ -223,10 +297,16 @@ def qualify_results(results: list[dict[str, Any]], max_llm_items: int = 20) -> d
         llm_used += 1
 
     qualified = [x for x in output if x["qualification"]["relevant"]]
+    reserve = [x for x in output if x.get("prefilter", {}).get("reserve_candidate")]
+
     return {
         "input_results": len(results),
         "llm_items_processed": llm_used,
+        "hard_filtered_count": hard_filtered,
+        "stale_filtered_count": stale_filtered,
+        "reserve_candidate_count": len(reserve),
         "qualified_count": len(qualified),
         "qualified": qualified,
+        "reserve_candidates": reserve,
         "all_results": output,
     }
