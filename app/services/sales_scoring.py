@@ -263,10 +263,31 @@ def score_sales_project(project: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def score_sales_projects(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def score_sales_projects(projects: list[dict[str, Any]]) -> dict[str, Any]:
     """
-    Backward-compatible batch API used by app.tasks.qualification.
-    V8 scores one project with score_sales_project(); the existing pipeline
-    still imports the historical plural helper.
+    Backward-compatible batch interface expected by app.tasks.qualification.
     """
-    return [score_sales_project(project) for project in projects]
+    scored = [score_sales_project(project) for project in projects]
+    scored.sort(
+        key=lambda p: (
+            p.get("sales_score") or 0,
+            p.get("project_score") or 0,
+        ),
+        reverse=True,
+    )
+    return {
+        "projects_scored_count": len(scored),
+        "priority_counts": {
+            key: sum(
+                1 for p in scored
+                if p.get("sales_priority") == key
+            )
+            for key in ("A_hot", "B_work", "C_verify", "D_research")
+        },
+        "projects": scored,
+    }
+
+
+def score_sales_readiness(projects: list[dict[str, Any]]) -> dict[str, Any]:
+    """Legacy alias kept for compatibility."""
+    return score_sales_projects(projects)

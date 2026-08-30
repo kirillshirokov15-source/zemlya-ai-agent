@@ -101,3 +101,27 @@ def verify_project(project: dict[str, Any]) -> dict[str, Any]:
         out["qualification"] = q
 
     return out
+
+
+def verify_and_rank(projects: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Backward-compatible batch interface expected by app.tasks.qualification.
+    """
+    verified = [verify_project(project) for project in projects]
+    verified.sort(
+        key=lambda p: (
+            p.get("sales_score") or 0,
+            p.get("project_score") or 0,
+        ),
+        reverse=True,
+    )
+    return {
+        "projects": verified,
+        "verified_count": len(verified),
+        "passed_count": sum(
+            1 for p in verified if p.get("final_verification_passed")
+        ),
+        "needs_attention_count": sum(
+            1 for p in verified if not p.get("final_verification_passed")
+        ),
+    }
