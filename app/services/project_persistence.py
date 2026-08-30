@@ -144,6 +144,9 @@ SCHEMA_UPGRADES = [
     "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS website TEXT",
     "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS enrichment_status TEXT",
     "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS last_enriched_at TIMESTAMPTZ",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS company_resolution_confidence TEXT",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS company_relation_confidence TEXT",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS company_resolution_checked_at TIMESTAMPTZ",
 ]
 
 
@@ -169,6 +172,8 @@ PROJECT_FIELDS = (
     "ogrn",
     "website",
     "enrichment_status",
+    "company_resolution_confidence",
+    "company_relation_confidence",
     "recommended_action",
 )
 
@@ -331,6 +336,14 @@ def upsert_project(
     payload["bucket"] = bucket
     enrichment = payload.get("enrichment") or {}
     payload["enrichment_status"] = enrichment.get("status")
+    payload["company_resolution_confidence"] = (
+        payload.get("company_resolution_confidence")
+        or enrichment.get("resolution_confidence")
+    )
+    payload["company_relation_confidence"] = (
+        payload.get("company_relation_confidence")
+        or enrichment.get("project_relation_confidence")
+    )
 
     fingerprint = _fingerprint(payload)
     snapshot = _snapshot(payload)
@@ -375,6 +388,9 @@ def upsert_project(
                         ogrn = :ogrn,
                         website = :website,
                         enrichment_status = :enrichment_status,
+                        company_resolution_confidence = :company_resolution_confidence,
+                        company_relation_confidence = :company_relation_confidence,
+                        company_resolution_checked_at = CASE WHEN :enrichment_status IS NOT NULL THEN :last_seen_at ELSE company_resolution_checked_at END,
                         last_enriched_at = CASE WHEN :enrichment_status IS NOT NULL THEN :last_seen_at ELSE last_enriched_at END,
                         recommended_action = :recommended_action,
                         last_seen_at = :last_seen_at,
@@ -430,7 +446,9 @@ def upsert_project(
                         project_summary, location, investment_rub, stage,
                         land_status, signal_status, confidence, lead_score,
                         project_score, sales_score, priority, sales_priority,
-                        resolved_company_name, legal_name, inn, ogrn, website, enrichment_status, last_enriched_at,
+                        resolved_company_name, legal_name, inn, ogrn, website, enrichment_status,
+                        company_resolution_confidence, company_relation_confidence,
+                        company_resolution_checked_at, last_enriched_at,
                         recommended_action, first_seen_at,
                         last_seen_at, last_search_run_id, is_active, raw
                     )
@@ -441,6 +459,8 @@ def upsert_project(
                         :signal_status, :confidence, :lead_score, :project_score,
                         :sales_score, :priority, :sales_priority, :resolved_company_name, :legal_name, :inn,
                         :ogrn, :website, :enrichment_status,
+                        :company_resolution_confidence, :company_relation_confidence,
+                        CASE WHEN :enrichment_status IS NOT NULL THEN :first_seen_at ELSE NULL END,
                         CASE WHEN :enrichment_status IS NOT NULL THEN :first_seen_at ELSE NULL END,
                         :recommended_action, :first_seen_at, :last_seen_at,
                         CAST(:last_search_run_id AS uuid), TRUE,
@@ -610,6 +630,8 @@ def persist_pipeline_results(
             "inn": None,
             "ogrn": None,
             "website": None,
+            "company_resolution_confidence": "unresolved",
+            "company_relation_confidence": "unresolved",
             "enrichment": {"status": "not_run", "contacts": []},
             "recommended_action": "manual_verification",
             "sources": [{
@@ -725,6 +747,9 @@ def list_projects(
             ogrn,
             website,
             enrichment_status,
+            company_resolution_confidence,
+            company_relation_confidence,
+            company_resolution_checked_at,
             recommended_action,
             first_seen_at,
             last_seen_at
@@ -772,6 +797,9 @@ def get_project(project_id: str) -> dict[str, Any] | None:
                     ogrn,
                     website,
                     enrichment_status,
+                    company_resolution_confidence,
+                    company_relation_confidence,
+                    company_resolution_checked_at,
                     last_enriched_at,
                     recommended_action,
                     first_seen_at,

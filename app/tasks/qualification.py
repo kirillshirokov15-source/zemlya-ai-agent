@@ -79,8 +79,8 @@ def qualification_discovery_test():
         # Resolve investor/company and public contacts only for stronger leads.
         enrichment = enrich_projects(
             project_scoring["projects"],
-            max_projects=10,
-            min_project_score=45,
+            max_projects=20,
+            min_project_score=40,
         )
         business_checked = apply_business_relevance(enrichment["projects"])
         final_dedup = deduplicate_business_projects(business_checked)
@@ -105,14 +105,17 @@ def qualification_discovery_test():
                 "below_threshold_count": ranking["below_threshold_count"],
                 "enrichment_processed": enrichment["processed_count"],
                 "enrichment_resolved": enrichment["resolved_count"],
+                "company_resolution_high": enrichment["high_confidence_count"],
+                "company_resolution_medium": enrichment["medium_confidence_count"],
+                "company_resolution_unresolved": enrichment["unresolved_count"],
                 "final_duplicates_merged": final_dedup["merged_count"],
-                "pipeline_version": "quality-v4.1",
+                "pipeline_version": "company-resolution-v5",
             },
         )
 
         return {
             "search_run_id": search_run_id,
-            "pipeline_version": "quality-v4.1",
+            "pipeline_version": "company-resolution-v5",
             "discovery": {
                 "queries_used": discovery["queries_used"],
                 "unique_results": discovery["unique_results"],
@@ -166,9 +169,11 @@ def qualification_discovery_test():
                 "projects_scored_count": project_scoring["projects_scored_count"],
                 "priority_counts": project_scoring["priority_counts"],
             },
-            "enrichment": {
+            "company_resolution": {
                 "processed_count": enrichment["processed_count"],
                 "resolved_count": enrichment["resolved_count"],
+                "high_confidence_count": enrichment["high_confidence_count"],
+                "medium_confidence_count": enrichment["medium_confidence_count"],
                 "unresolved_count": enrichment["unresolved_count"],
             },
             "final_quality_gate": {
