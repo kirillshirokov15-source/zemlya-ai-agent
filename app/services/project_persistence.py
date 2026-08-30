@@ -633,9 +633,27 @@ def persist_pipeline_results(
             )
         )
 
+    # Reconcile the "current list" only after all rows of this run were
+    # persisted successfully. Previous rows remain in the database/history,
+    # but are no longer shown as current leads.
+    with _engine().begin() as conn:
+        deactivated = conn.execute(
+            text("""
+                UPDATE lead_projects
+                SET is_active = FALSE
+                WHERE is_active = TRUE
+                  AND (
+                      last_search_run_id IS NULL
+                      OR last_search_run_id <> CAST(:search_run_id AS uuid)
+                  )
+            """),
+            {"search_run_id": search_run_id},
+        ).rowcount
+
     return {
         "active_saved": len(active_ids),
         "verification_saved": len(verification_ids),
+        "stale_rows_deactivated": int(deactivated or 0),
         "project_ids": {
             "active": active_ids,
             "verification_pool": verification_ids,
@@ -657,7 +675,7 @@ def list_projects(
 ) -> list[dict[str, Any]]:
     ensure_schema()
 
-    clauses = ["1=1"]
+    clauses = ["is_active = TRUE"]
     params: dict[str, Any] = {"limit": limit, "offset": offset}
 
     if bucket:
@@ -713,8 +731,8 @@ def list_projects(
         FROM lead_projects
         WHERE {' AND '.join(clauses)}
         ORDER BY
-            CASE WHEN bucket = 'active' THEN 0 ELSE 1 END,
             sales_score DESC NULLS LAST,
+            project_score DESC NULLS LAST,
             lead_score DESC NULLS LAST,
             last_seen_at DESC
         LIMIT :limit OFFSET :offset
