@@ -6,8 +6,8 @@ def _payload(project: dict[str, Any]) -> dict[str, Any]:
     return project.get("qualification") or project
 
 
-def _priority(score: int) -> str:
-    if score >= 90:
+def _priority(score: int, has_direct_contact: bool = False) -> str:
+    if score >= 90 and has_direct_contact:
         return "A_hot"
     if score >= 70:
         return "B_work"
@@ -110,7 +110,7 @@ def score_sales_project(project: dict[str, Any]) -> dict[str, Any]:
         score -= 10
 
     score = max(0, min(100, score))
-    priority = _priority(score)
+    priority = _priority(score, direct_contact)
     action = _action(score, direct_contact)
 
     out = dict(project)

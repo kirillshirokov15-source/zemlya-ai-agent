@@ -13,6 +13,7 @@ from app.services.temporal_quality import assess_temporal_projects
 from app.services.company_enrichment import enrich_projects
 from app.services.sales_scoring import score_sales_projects
 from app.services.final_quality_gate import apply_business_relevance, deduplicate_business_projects
+from app.services.contact_enrichment import enrich_project_contacts
 from app.services.project_persistence import (
     create_search_run,
     finish_search_run,
@@ -84,7 +85,12 @@ def qualification_discovery_test():
         )
         business_checked = apply_business_relevance(enrichment["projects"])
         final_dedup = deduplicate_business_projects(business_checked)
-        sales_scoring = score_sales_projects(final_dedup["projects"])
+        contact_enrichment = enrich_project_contacts(
+            final_dedup["projects"],
+            max_projects=15,
+            min_project_score=50,
+        )
+        sales_scoring = score_sales_projects(contact_enrichment["projects"])
 
         persistence = persist_pipeline_results(
             search_run_id=search_run_id,
@@ -109,13 +115,16 @@ def qualification_discovery_test():
                 "company_resolution_medium": enrichment["medium_confidence_count"],
                 "company_resolution_unresolved": enrichment["unresolved_count"],
                 "final_duplicates_merged": final_dedup["merged_count"],
-                "pipeline_version": "company-resolution-v5",
+                "contacts_processed": contact_enrichment["processed_count"],
+                "projects_with_contacts": contact_enrichment["with_contacts_count"],
+                "projects_with_direct_contact": contact_enrichment["with_direct_contact_count"],
+                "pipeline_version": "contacts-v6",
             },
         )
 
         return {
             "search_run_id": search_run_id,
-            "pipeline_version": "company-resolution-v5",
+            "pipeline_version": "contacts-v6",
             "discovery": {
                 "queries_used": discovery["queries_used"],
                 "unique_results": discovery["unique_results"],
@@ -180,6 +189,11 @@ def qualification_discovery_test():
                 "input_count": final_dedup["input_count"],
                 "unique_count": final_dedup["unique_count"],
                 "merged_count": final_dedup["merged_count"],
+            },
+            "contact_enrichment": {
+                "processed_count": contact_enrichment["processed_count"],
+                "with_contacts_count": contact_enrichment["with_contacts_count"],
+                "with_direct_contact_count": contact_enrichment["with_direct_contact_count"],
             },
             "sales_scoring": {
                 "projects_scored_count": sales_scoring["projects_scored_count"],
