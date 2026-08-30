@@ -261,3 +261,12 @@ def score_sales_project(project: dict[str, Any]) -> dict[str, Any]:
         "sales_scoring_version": "v8",
     })
     return result
+
+
+def score_sales_projects(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Backward-compatible batch API used by app.tasks.qualification.
+    V8 scores one project with score_sales_project(); the existing pipeline
+    still imports the historical plural helper.
+    """
+    return [score_sales_project(project) for project in projects]
