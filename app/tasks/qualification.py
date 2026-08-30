@@ -57,7 +57,20 @@ def _gate_view(item):
 
 @celery_app.task(name="qualification.discovery_test")
 def qualification_discovery_test():
-    discovery = asyncio.run(run_default_discovery(max_results_per_query=8, days_back=180))
+    discovery = asyncio.run(run_default_discovery(max_results_per_query=6, days_back=180))
+
+    # Never publish an incomplete current-run list if Tavily quota ends mid-discovery.
+    # Preserve the last successful list and return a controlled task result.
+    if discovery.get("quota_exhausted"):
+        return {
+            "status": "blocked_tavily_quota",
+            "message": "Tavily usage limit reached. Previous successful project list was preserved.",
+            "completed_queries_count": discovery.get("completed_queries_count", 0),
+            "planned_queries_count": discovery.get("planned_queries_count", 0),
+            "partial_results_discarded": discovery.get("unique_results", 0),
+            "quota_error": discovery.get("quota_error"),
+            "pipeline_version": "finalization-v7.1-quota-safe",
+        }
 
     search_run_id = create_search_run(
         queries_used=discovery["queries_used"],
@@ -67,7 +80,7 @@ def qualification_discovery_test():
 
     try:
         page_enrichment = enrich_search_results_with_full_pages_sync(
-            discovery["results"], max_urls=45, extract_depth="basic"
+            discovery["results"], max_urls=25, extract_depth="basic"
         )
         extraction = extract_atomic_projects(page_enrichment["results"], max_llm_sources=20)
         ranking = rank_candidates(extraction["results"], max_selected=40, minimum_score=20)
@@ -81,16 +94,16 @@ def qualification_discovery_test():
         # Resolve investor/company and public contacts only for stronger leads.
         enrichment = enrich_projects(
             project_scoring["projects"],
-            max_projects=20,
-            min_project_score=40,
+            max_projects=12,
+            min_project_score=50,
         )
         business_checked = apply_business_relevance(enrichment["projects"])
         final_dedup = deduplicate_business_projects(business_checked)
 
         contact_enrichment = enrich_project_contacts(
             final_dedup["projects"],
-            max_projects=10,
-            min_project_score=55,
+            max_projects=8,
+            min_project_score=60,
         )
 
         sales_scoring = score_sales_projects(contact_enrichment["projects"])
@@ -125,13 +138,13 @@ def qualification_discovery_test():
                 "projects_with_direct_contact": contact_enrichment["with_direct_contact_count"],
                 "final_verified": final_verification["verified_count"],
                 "final_passed": final_verification["passed_count"],
-                "pipeline_version": "finalization-v7",
+                "pipeline_version": "finalization-v7.1-quota-safe",
             },
         )
 
         return {
             "search_run_id": search_run_id,
-            "pipeline_version": "finalization-v7",
+            "pipeline_version": "finalization-v7.1-quota-safe",
             "discovery": {
                 "queries_used": discovery["queries_used"],
                 "unique_results": discovery["unique_results"],
