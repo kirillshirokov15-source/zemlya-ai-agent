@@ -14,6 +14,7 @@ from app.services.project_persistence import (
     list_search_runs,
 )
 from app.worker import celery_app
+from app.services.project_rescore import rescore_current_projects
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -207,8 +208,33 @@ function closeModal(){document.getElementById('modal').classList.remove('open')}
 async function startRun(){let b=document.getElementById('runBtn');b.disabled=true;document.getElementById('runStatus').textContent='Идёт поиск новых лидов…';try{let x=await fetch('/projects/search-runs/start',{method:'POST'}).then(r=>r.json());poll(x.task_id)}catch(e){document.getElementById('runStatus').textContent='Не удалось запустить поиск';b.disabled=false}}
 async function poll(id){let x=await fetch('/projects/tasks/'+id).then(r=>r.json());document.getElementById('runStatus').textContent='Поиск: '+x.status;if(['SUCCESS','FAILURE'].includes(x.status)){document.getElementById('runBtn').disabled=false;if(x.status==='SUCCESS')load();return}setTimeout(()=>poll(id),4000)}
 load();
+
+async function rescoreCurrent(){
+  if(!confirm('Пересчитать Sales Score и Project Score по уже сохранённым данным? Интернет-поиск не запускается.')) return;
+  const btns=[...document.querySelectorAll('button')];
+  const b=btns.find(x=>x.textContent.includes('Пересчитать текущую базу'));
+  if(b){b.disabled=true;b.textContent='Пересчитываю...'}
+  try{
+    const r=await fetch('/projects/rescore-current',{method:'POST'});
+    const d=await r.json();
+    if(!r.ok) throw new Error(JSON.stringify(d));
+    alert(`Готово. Обновлено проектов: ${d.rows_updated}. Изменений показано: ${d.changed_examples.length}`);
+    location.reload();
+  }catch(e){
+    alert('Ошибка пересчёта: '+e);
+    if(b){b.disabled=false;b.textContent='Пересчитать текущую базу'}
+  }
+}
+
 </script></body></html>'''
 
+
+
+
+@router.post("/rescore-current")
+def rescore_current():
+    """Recalculate current saved projects without Tavily/OpenAI/web calls."""
+    return rescore_current_projects()
 
 @router.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
