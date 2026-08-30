@@ -14,6 +14,7 @@ from app.services.company_enrichment import enrich_projects
 from app.services.sales_scoring import score_sales_projects
 from app.services.final_quality_gate import apply_business_relevance, deduplicate_business_projects
 from app.services.contact_enrichment import enrich_project_contacts
+from app.services.final_verification import verify_and_rank
 from app.services.project_persistence import (
     create_search_run,
     finish_search_run,
@@ -85,16 +86,19 @@ def qualification_discovery_test():
         )
         business_checked = apply_business_relevance(enrichment["projects"])
         final_dedup = deduplicate_business_projects(business_checked)
+
         contact_enrichment = enrich_project_contacts(
             final_dedup["projects"],
-            max_projects=15,
-            min_project_score=50,
+            max_projects=10,
+            min_project_score=55,
         )
+
         sales_scoring = score_sales_projects(contact_enrichment["projects"])
+        final_verification = verify_and_rank(sales_scoring["projects"])
 
         persistence = persist_pipeline_results(
             search_run_id=search_run_id,
-            active_scored_projects=sales_scoring["projects"],
+            active_scored_projects=final_verification["projects"],
             verification_items=lead_gate["verification_pool"],
         )
 
@@ -116,15 +120,18 @@ def qualification_discovery_test():
                 "company_resolution_unresolved": enrichment["unresolved_count"],
                 "final_duplicates_merged": final_dedup["merged_count"],
                 "contacts_processed": contact_enrichment["processed_count"],
+                "contacts_cache_hits": contact_enrichment["cache_hit_count"],
                 "projects_with_contacts": contact_enrichment["with_contacts_count"],
                 "projects_with_direct_contact": contact_enrichment["with_direct_contact_count"],
-                "pipeline_version": "contacts-v6",
+                "final_verified": final_verification["verified_count"],
+                "final_passed": final_verification["passed_count"],
+                "pipeline_version": "finalization-v7",
             },
         )
 
         return {
             "search_run_id": search_run_id,
-            "pipeline_version": "contacts-v6",
+            "pipeline_version": "finalization-v7",
             "discovery": {
                 "queries_used": discovery["queries_used"],
                 "unique_results": discovery["unique_results"],
@@ -194,6 +201,12 @@ def qualification_discovery_test():
                 "processed_count": contact_enrichment["processed_count"],
                 "with_contacts_count": contact_enrichment["with_contacts_count"],
                 "with_direct_contact_count": contact_enrichment["with_direct_contact_count"],
+                "cache_hit_count": contact_enrichment["cache_hit_count"],
+            },
+            "final_verification": {
+                "verified_count": final_verification["verified_count"],
+                "passed_count": final_verification["passed_count"],
+                "needs_attention_count": final_verification["needs_attention_count"],
             },
             "sales_scoring": {
                 "projects_scored_count": sales_scoring["projects_scored_count"],

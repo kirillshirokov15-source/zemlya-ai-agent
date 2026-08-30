@@ -147,6 +147,8 @@ SCHEMA_UPGRADES = [
     "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS company_resolution_confidence TEXT",
     "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS company_relation_confidence TEXT",
     "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS company_resolution_checked_at TIMESTAMPTZ",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS final_grade TEXT",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS final_verification_passed BOOLEAN",
 ]
 
 
@@ -174,6 +176,8 @@ PROJECT_FIELDS = (
     "enrichment_status",
     "company_resolution_confidence",
     "company_relation_confidence",
+    "final_grade",
+    "final_verification_passed",
     "recommended_action",
 )
 
@@ -390,6 +394,8 @@ def upsert_project(
                         enrichment_status = :enrichment_status,
                         company_resolution_confidence = :company_resolution_confidence,
                         company_relation_confidence = :company_relation_confidence,
+                        final_grade = :final_grade,
+                        final_verification_passed = :final_verification_passed,
                         company_resolution_checked_at = CASE WHEN :enrichment_status IS NOT NULL THEN :last_seen_at ELSE company_resolution_checked_at END,
                         last_enriched_at = CASE WHEN :enrichment_status IS NOT NULL THEN :last_seen_at ELSE last_enriched_at END,
                         recommended_action = :recommended_action,
@@ -448,6 +454,7 @@ def upsert_project(
                         project_score, sales_score, priority, sales_priority,
                         resolved_company_name, legal_name, inn, ogrn, website, enrichment_status,
                         company_resolution_confidence, company_relation_confidence,
+                        final_grade, final_verification_passed,
                         company_resolution_checked_at, last_enriched_at,
                         recommended_action, first_seen_at,
                         last_seen_at, last_search_run_id, is_active, raw
@@ -460,6 +467,7 @@ def upsert_project(
                         :sales_score, :priority, :sales_priority, :resolved_company_name, :legal_name, :inn,
                         :ogrn, :website, :enrichment_status,
                         :company_resolution_confidence, :company_relation_confidence,
+                        :final_grade, :final_verification_passed,
                         CASE WHEN :enrichment_status IS NOT NULL THEN :first_seen_at ELSE NULL END,
                         CASE WHEN :enrichment_status IS NOT NULL THEN :first_seen_at ELSE NULL END,
                         :recommended_action, :first_seen_at, :last_seen_at,
@@ -632,6 +640,8 @@ def persist_pipeline_results(
             "website": None,
             "company_resolution_confidence": "unresolved",
             "company_relation_confidence": "unresolved",
+            "final_grade": "D_low",
+            "final_verification_passed": False,
             "enrichment": {"status": "not_run", "contacts": []},
             "recommended_action": "manual_verification",
             "sources": [{
@@ -750,6 +760,8 @@ def list_projects(
             company_resolution_confidence,
             company_relation_confidence,
             company_resolution_checked_at,
+            final_grade,
+            final_verification_passed,
             recommended_action,
             first_seen_at,
             last_seen_at
@@ -800,6 +812,8 @@ def get_project(project_id: str) -> dict[str, Any] | None:
                     company_resolution_confidence,
                     company_relation_confidence,
                     company_resolution_checked_at,
+                    final_grade,
+                    final_verification_passed,
                     last_enriched_at,
                     recommended_action,
                     first_seen_at,

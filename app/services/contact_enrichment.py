@@ -12,6 +12,7 @@ import httpx
 from openai import OpenAI
 
 from app.core.config import settings
+from app.services.contact_cache import get_cached_contacts, set_cached_contacts
 
 
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
@@ -221,6 +222,20 @@ def enrich_contacts(project: dict[str, Any]) -> dict[str, Any]:
     if e.get("status") != "resolved":
         return {**project, "contact_enrichment": {"status": "skipped", "contacts": []}}
 
+    inn = e.get("inn") or project.get("inn")
+    legal_name = e.get("legal_name") or project.get("legal_name")
+
+    cached = get_cached_contacts(inn)
+    if cached:
+        out = dict(project)
+        out["contact_enrichment"] = cached
+        merged_e = dict(e)
+        merged_e["contacts"] = cached.get("contacts") or []
+        merged_e["general_company_email"] = cached.get("general_company_email")
+        merged_e["general_company_phone"] = cached.get("general_company_phone")
+        out["enrichment"] = merged_e
+        return out
+
     queries = _queries(project)
     if not queries:
         return {**project, "contact_enrichment": {"status": "skipped", "contacts": []}}
@@ -313,6 +328,7 @@ def enrich_contacts(project: dict[str, Any]) -> dict[str, Any]:
         merged_e["general_company_email"] = general_email
         merged_e["general_company_phone"] = general_phone
         out["enrichment"] = merged_e
+        set_cached_contacts(inn, legal_name, ce)
         return out
 
     except Exception as exc:
@@ -329,22 +345,43 @@ def enrich_contacts(project: dict[str, Any]) -> dict[str, Any]:
 def enrich_project_contacts(
     projects: list[dict[str, Any]],
     *,
-    max_projects: int = 15,
-    min_project_score: int = 50,
+    max_projects: int = 10,
+    min_project_score: int = 55,
 ) -> dict[str, Any]:
     ordered = sorted(
         projects,
         key=lambda p: p.get("project_score") or p.get("lead_score") or 0,
         reverse=True,
     )
-    output = []
+
+    output: list[dict[str, Any]] = []
     processed = 0
+    run_cache: dict[str, dict[str, Any]] = {}
+
     for p in ordered:
         score = p.get("project_score") or p.get("lead_score") or 0
-        resolved = (p.get("enrichment") or {}).get("status") == "resolved"
+        e = p.get("enrichment") or {}
+        resolved = e.get("status") == "resolved"
+        inn = e.get("inn") or p.get("inn")
+
+        if inn and inn in run_cache:
+            cached_project = dict(p)
+            ce = dict(run_cache[inn])
+            cached_project["contact_enrichment"] = ce
+            merged_e = dict(e)
+            merged_e["contacts"] = ce.get("contacts") or []
+            merged_e["general_company_email"] = ce.get("general_company_email")
+            merged_e["general_company_phone"] = ce.get("general_company_phone")
+            cached_project["enrichment"] = merged_e
+            output.append(cached_project)
+            continue
+
         if processed < max_projects and score >= min_project_score and resolved:
-            output.append(enrich_contacts(p))
+            enriched = enrich_contacts(p)
+            output.append(enriched)
             processed += 1
+            if inn and enriched.get("contact_enrichment"):
+                run_cache[inn] = dict(enriched["contact_enrichment"])
         else:
             output.append(p)
 
@@ -360,6 +397,10 @@ def enrich_project_contacts(
                 c.get("phone") or c.get("email")
                 for c in ((p.get("contact_enrichment") or {}).get("contacts") or [])
             )
+        ),
+        "cache_hit_count": sum(
+            1 for p in output
+            if (p.get("contact_enrichment") or {}).get("cache_hit") is True
         ),
         "projects": output,
     }
