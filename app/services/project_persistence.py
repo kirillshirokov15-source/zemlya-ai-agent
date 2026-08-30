@@ -246,11 +246,23 @@ def _changed_fields(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
 
 def create_search_run(
     *,
-    queries_used: int | None,
+    queries_used: int | list[str] | tuple[str, ...] | None,
     discovered_count: int | None,
     metadata: dict[str, Any] | None = None,
 ) -> str:
     ensure_schema()
+
+    # Compatibility:
+    # older discovery code passed the number of queries,
+    # newer Tavily discovery returns the actual list of query strings.
+    # lead_search_runs.queries_used is intentionally stored as INTEGER.
+    if isinstance(queries_used, (list, tuple)):
+        queries_used_count = len(queries_used)
+    elif queries_used is None:
+        queries_used_count = None
+    else:
+        queries_used_count = int(queries_used)
+
     run_id = str(uuid.uuid4())
     now = _now()
     with _engine().begin() as conn:
@@ -269,7 +281,7 @@ def create_search_run(
             {
                 "id": run_id,
                 "started_at": now,
-                "queries_used": queries_used,
+                "queries_used": queries_used_count,
                 "discovered_count": discovered_count,
                 "metadata": json.dumps(_jsonable(metadata or {}), ensure_ascii=False),
             },
