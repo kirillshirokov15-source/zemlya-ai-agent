@@ -149,6 +149,8 @@ SCHEMA_UPGRADES = [
     "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS company_resolution_checked_at TIMESTAMPTZ",
     "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS final_grade TEXT",
     "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS final_verification_passed BOOLEAN",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS missed_search_runs INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE lead_projects ADD COLUMN IF NOT EXISTS freshness_status TEXT NOT NULL DEFAULT 'current'",
 ]
 
 
@@ -401,6 +403,8 @@ def upsert_project(
                         recommended_action = :recommended_action,
                         last_seen_at = :last_seen_at,
                         last_search_run_id = CAST(:last_search_run_id AS uuid),
+                        missed_search_runs = 0,
+                        freshness_status = 'current',
                         is_active = TRUE,
                         raw = CAST(:raw AS jsonb)
                     WHERE id = CAST(:id AS uuid)
@@ -457,7 +461,7 @@ def upsert_project(
                         final_grade, final_verification_passed,
                         company_resolution_checked_at, last_enriched_at,
                         recommended_action, first_seen_at,
-                        last_seen_at, last_search_run_id, is_active, raw
+                        last_seen_at, last_search_run_id, missed_search_runs, freshness_status, is_active, raw
                     )
                     VALUES (
                         CAST(:id AS uuid), :fingerprint, :bucket,
@@ -471,7 +475,7 @@ def upsert_project(
                         CASE WHEN :enrichment_status IS NOT NULL THEN :first_seen_at ELSE NULL END,
                         CASE WHEN :enrichment_status IS NOT NULL THEN :first_seen_at ELSE NULL END,
                         :recommended_action, :first_seen_at, :last_seen_at,
-                        CAST(:last_search_run_id AS uuid), TRUE,
+                        CAST(:last_search_run_id AS uuid), 0, 'current', TRUE,
                         CAST(:raw AS jsonb)
                     )
                 """),
@@ -665,15 +669,25 @@ def persist_pipeline_results(
             )
         )
 
-    # Reconcile the "current list" only after all rows of this run were
-    # persisted successfully. Previous rows remain in the database/history,
-    # but are no longer shown as current leads.
+    # Cumulative working database:
+    # one missed search -> keep; two -> review; three -> archive.
+    # Weak verification-pool rows are archived after one missed search.
     with _engine().begin() as conn:
-        deactivated = conn.execute(
+        active_update = conn.execute(
             text("""
                 UPDATE lead_projects
-                SET is_active = FALSE
+                SET missed_search_runs = missed_search_runs + 1,
+                    freshness_status = CASE
+                        WHEN missed_search_runs + 1 = 1 THEN 'not_seen_once'
+                        WHEN missed_search_runs + 1 = 2 THEN 'needs_review'
+                        ELSE 'archived_not_seen'
+                    END,
+                    is_active = CASE
+                        WHEN missed_search_runs + 1 >= 3 THEN FALSE
+                        ELSE TRUE
+                    END
                 WHERE is_active = TRUE
+                  AND bucket = 'active'
                   AND (
                       last_search_run_id IS NULL
                       OR last_search_run_id <> CAST(:search_run_id AS uuid)
@@ -682,10 +696,38 @@ def persist_pipeline_results(
             {"search_run_id": search_run_id},
         ).rowcount
 
+        verification_archived = conn.execute(
+            text("""
+                UPDATE lead_projects
+                SET missed_search_runs = missed_search_runs + 1,
+                    freshness_status = 'archived_not_seen',
+                    is_active = FALSE
+                WHERE is_active = TRUE
+                  AND bucket = 'verification_pool'
+                  AND (
+                      last_search_run_id IS NULL
+                      OR last_search_run_id <> CAST(:search_run_id AS uuid)
+                  )
+            """),
+            {"search_run_id": search_run_id},
+        ).rowcount
+
+        needs_review = conn.execute(
+            text("""
+                SELECT COUNT(*)
+                FROM lead_projects
+                WHERE is_active = TRUE
+                  AND freshness_status = 'needs_review'
+            """)
+        ).scalar_one()
+
+
     return {
         "active_saved": len(active_ids),
         "verification_saved": len(verification_ids),
-        "stale_rows_deactivated": int(deactivated or 0),
+        "previous_active_rows_missed": int(active_update or 0),
+        "verification_rows_archived": int(verification_archived or 0),
+        "needs_review_count": int(needs_review or 0),
         "project_ids": {
             "active": active_ids,
             "verification_pool": verification_ids,
@@ -763,6 +805,18 @@ def list_projects(
             final_grade,
             final_verification_passed,
             recommended_action,
+            missed_search_runs,
+            freshness_status,
+            CASE
+                WHEN first_seen_at >= COALESCE((
+                    SELECT started_at
+                    FROM lead_search_runs
+                    WHERE status = 'success'
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                ), first_seen_at + INTERVAL '1 second') THEN TRUE
+                ELSE FALSE
+            END AS is_new,
             first_seen_at,
             last_seen_at
         FROM lead_projects
@@ -816,6 +870,8 @@ def get_project(project_id: str) -> dict[str, Any] | None:
                     final_verification_passed,
                     last_enriched_at,
                     recommended_action,
+                    missed_search_runs,
+                    freshness_status,
                     first_seen_at,
                     last_seen_at,
                     raw

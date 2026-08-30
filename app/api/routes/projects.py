@@ -121,7 +121,7 @@ def projects_export_xlsx(
         "ID", "Статус лида", "Sales Score", "Project Score", "Приоритет продажи",
         "Компания", "Юр. лицо", "ИНН", "Сайт", "Тип проекта", "Описание",
         "Локация", "Инвестиции, ₽", "Стадия проекта", "Земельный участок", "Статус проекта",
-        "Уверенность данных", "Что делать", "Первое обнаружение", "Последнее обнаружение",
+        "Уверенность данных", "Что делать", "Актуальность", "Пропущено поисков", "Первое обнаружение", "Последнее обнаружение",
     ]
     ws.append(headers)
     for p in projects:
@@ -130,7 +130,7 @@ def projects_export_xlsx(
             _priority_label(p.get("sales_priority") or p.get("priority")), p.get("company_name"), p.get("legal_name"), p.get("inn"), p.get("website"),
             p.get("project_type"), p.get("project_summary"), p.get("location"), p.get("investment_rub"),
             _stage_label(p.get("stage")), _land_label(p.get("land_status")), p.get("signal_status"), p.get("confidence"),
-            _action_label(p.get("recommended_action")), p.get("first_seen_at"), p.get("last_seen_at"),
+            _action_label(p.get("recommended_action")), p.get("freshness_status"), p.get("missed_search_runs"), p.get("first_seen_at"), p.get("last_seen_at"),
         ])
 
     header_fill = PatternFill("solid", fgColor="1F4E78")
@@ -142,7 +142,7 @@ def projects_export_xlsx(
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
-    widths = [38,18,12,12,16,28,34,14,30,38,70,42,18,10,18,18,14,24,22,22]
+    widths = [38,18,12,12,16,28,34,14,30,38,70,42,18,10,18,18,14,24,18,16,22,22]
     for idx, width in enumerate(widths, start=1):
         ws.column_dimensions[chr(64 + idx)].width = width
     ws.freeze_panes = "A2"
@@ -162,70 +162,51 @@ DASHBOARD_HTML = r'''<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Zemlya AI – лиды</title>
+<title>Zemlya AI – потенциальные клиенты</title>
 <style>
-:root{--bg:#f5f7fa;--card:#fff;--text:#18212f;--muted:#6b7280;--line:#e5e7eb;--accent:#173b67;--ok:#0f766e;--warn:#b45309}
-*{box-sizing:border-box}body{margin:0;font:14px Inter,Arial,sans-serif;background:var(--bg);color:var(--text)}
+:root{--bg:#f4f6f8;--card:#fff;--text:#172033;--muted:#687386;--line:#e3e7ed;--accent:#173b67}
+*{box-sizing:border-box}body{margin:0;font:14px Arial,sans-serif;background:var(--bg);color:var(--text)}
 header{background:#fff;border-bottom:1px solid var(--line);padding:18px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:4}
-h1{font-size:20px;margin:0}.sub{color:var(--muted);font-size:12px;margin-top:3px}.wrap{padding:20px 24px;max-width:1700px;margin:auto}
-.toolbar,.stats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-.stat{min-width:130px}.stat b{font-size:22px;display:block;margin-top:3px}input,select,button,a.btn{border:1px solid #cfd5dd;border-radius:8px;padding:9px 10px;background:#fff;color:var(--text);text-decoration:none}
-button.primary{background:var(--accent);color:#fff;border-color:var(--accent);cursor:pointer}button:disabled{opacity:.55}.grow{flex:1;min-width:220px}
-.tablebox{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:auto}table{width:100%;border-collapse:collapse;min-width:1350px}th,td{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:#fafbfc;font-size:12px;position:sticky;top:0}tr:hover{background:#fafcff}.score{font-weight:700;font-size:16px}.muted{color:var(--muted)}
-.badge{display:inline-block;padding:3px 7px;border-radius:999px;background:#edf2f7;font-size:11px;white-space:nowrap}.hot{background:#d1fae5;color:#065f46}.verify{background:#fef3c7;color:#92400e}
-.summary{max-width:380px}.company{font-weight:650}.click{cursor:pointer}.modal{display:none;position:fixed;inset:0;background:#0006;z-index:20;padding:5vh 8vw}.modal.open{display:block}.panel{background:#fff;border-radius:14px;max-width:1100px;margin:auto;max-height:90vh;overflow:auto;padding:22px}.panel h2{margin-top:0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.wide{grid-column:1/-1}.contact{padding:9px;border:1px solid var(--line);border-radius:8px;margin:6px 0}.status{font-size:12px;color:var(--muted)}
-@media(max-width:800px){.wrap{padding:12px}.grid{grid-template-columns:1fr}.modal{padding:2vh 2vw}}
+h1{font-size:21px;margin:0}.sub{color:var(--muted);font-size:12px;margin-top:4px}.wrap{padding:20px 24px;max-width:1750px;margin:auto}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px 15px}.stats,.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}.stat{min-width:145px}.stat b{font-size:23px;display:block;margin-top:3px}
+input,select,button,a.btn{border:1px solid #cad1db;border-radius:8px;padding:9px 11px;background:#fff;color:var(--text);text-decoration:none}button{cursor:pointer}button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}button:disabled{opacity:.55}.grow{flex:1;min-width:220px}
+.notice{margin-bottom:14px;display:flex;gap:16px;align-items:center;justify-content:space-between}.notice strong{display:block;margin-bottom:4px}.muted{color:var(--muted)}
+.tablebox{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:auto}table{width:100%;border-collapse:collapse;min-width:1500px}th,td{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:#fafbfc;font-size:12px;position:sticky;top:0}tr:hover{background:#fafcff}.score{font-weight:700;font-size:17px}.summary{max-width:390px}.company{font-weight:700}.click{cursor:pointer}
+.badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#edf2f7;font-size:11px;white-space:nowrap}.new{background:#d1fae5;color:#065f46}.review{background:#fef3c7;color:#92400e}.miss{background:#edf2f7;color:#4a5568}.hot{background:#d1fae5;color:#065f46}.low{background:#f1f5f9;color:#64748b}
+.modal{display:none;position:fixed;inset:0;background:#0006;z-index:20;padding:5vh 8vw}.modal.open{display:block}.panel{background:#fff;border-radius:14px;max-width:1100px;margin:auto;max-height:90vh;overflow:auto;padding:22px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.wide{grid-column:1/-1}.contact{padding:9px;border:1px solid var(--line);border-radius:8px;margin:6px 0}.status{font-size:12px;color:var(--muted)}
+@media(max-width:800px){.wrap{padding:12px}.grid{grid-template-columns:1fr}.modal{padding:2vh 2vw}.notice{align-items:flex-start;flex-direction:column}}
 </style></head>
 <body>
-<header><div><h1>Zemlya AI – потенциальные клиенты</h1><div class="sub">Актуальные инвестиционные проекты Московской области – идти по списку сверху вниз</div></div><div class="status" id="runStatus">Готово</div></header>
+<header><div><h1>Zemlya AI – потенциальные клиенты</h1><div class="sub">Накопительная база инвестиционных проектов Московской области</div></div><div class="status" id="runStatus">Готово</div></header>
 <div class="wrap">
-<div class="stats"><div class="card stat">Актуальных проектов<b id="sAll">–</b></div><div class="card stat">Готовы к контакту<b id="sReady">–</b></div><div class="card stat">Высокий потенциал<b id="sHot">–</b></div><div class="card stat">Нужна проверка<b id="sVerify">–</b></div></div>
-<details class="card" style="margin-bottom:14px"><summary style="cursor:pointer;font-weight:700">Как читать список?</summary><div style="margin-top:10px;line-height:1.55"><b>A – Ранняя стадия:</b> проект объявлен, участок требуется или ещё не подтверждён. <b>B – Подготовка площадки:</b> территория понятна, но участок выбирают или оформляют. <b>V – Участок определён:</b> земля уже выбрана или предоставлена. <b>G – Строительство началось:</b> обычно низкий приоритет для земельной услуги.<br><br><b>Project Score</b> – насколько проект соответствует услугам «Земля без торгов». <b>Sales Score</b> – насколько реально можно начинать продажу сейчас: <b>90–100 – найден ЛПР с прямым контактом</b>, <b>70–89 – сильный лид, но контакт нужно дособрать</b>, <b>50–69 – сначала проверить данные</b>, <b>0–49 – низкий приоритет</b>.</div></details>
-<div class="card" style="margin-bottom:14px;line-height:1.55"><b>Как пользоваться:</b> идите по списку сверху вниз. Сначала звоните/пишите лидам 90–100. Для 70–89 сначала откройте карточку и дособерите прямой контакт ЛПР. 50–69 – перепроверьте статус проекта. Ниже 50 – только при наличии свободного времени.</div>
+<div class="notice card"><div><strong id="lastRun">Последний поиск: –</strong><span class="muted">Оптимально запускать один раз в неделю. Новый поиск обновляет базу и добавляет новые проекты.</span></div><div><button class="primary" id="runBtn" onclick="startRun()">Запустить новый поиск</button> <a class="btn" href="/projects/export.xlsx">Скачать Excel</a></div></div>
+<div class="stats"><div class="card stat">В рабочей базе<b id="sAll">–</b></div><div class="card stat">Новых<b id="sNew">–</b></div><div class="card stat">Высокий потенциал<b id="sHot">–</b></div><div class="card stat">Требуют проверки<b id="sReview">–</b></div></div>
+<details class="card" style="margin-bottom:14px"><summary style="cursor:pointer;font-weight:700">Как пользоваться</summary><div style="margin-top:10px;line-height:1.6">Работайте сверху вниз по <b>Sales Score</b>. <b>90–100</b> – готовность к контакту при наличии прямого ЛПР. <b>70–89</b> – высокий потенциал, обычно нужно найти прямой контакт. <b>50–69</b> – сначала проверить проект. <b>Ниже 50</b> – низкий приоритет.<br><br><b>Project Score</b> – соответствие проекта услугам. A – ранняя стадия, B – подготовка площадки, V – участок определён, G – строительство началось.<br><br>Если проект не попался в одном новом поиске, он не исчезает. После первого пропуска остаётся в базе, после второго получает отметку «Проверить актуальность», после третьего подряд архивируется из рабочего списка.</div></details>
 <div class="toolbar card">
 <select id="priority"><option value="">Любой приоритет</option><option value="A_hot">Готов к контакту</option><option value="B_work">Высокий потенциал</option><option value="C_verify">Требует проверки</option><option value="D_research">Низкий приоритет</option></select>
 <select id="stage"><option value="">Любая стадия</option><option value="A">A – Ранняя стадия</option><option value="B">B – Подготовка площадки</option><option value="V">V – Участок определён</option><option value="G">G – Строительство началось</option><option value="unknown">Стадия уточняется</option></select>
-<input id="company" class="grow" placeholder="Поиск по компании">
-<input id="minSales" type="number" min="0" max="100" placeholder="Sales Score от 0 до 100">
-<button onclick="load()">Применить фильтры</button><button class="primary" id="runBtn" onclick="startRun()">Запустить новый поиск</button>
-<a class="btn" href="/projects/export.xlsx">Скачать Excel</a>
+<input id="company" class="grow" placeholder="Поиск по компании"><input id="minSales" type="number" min="0" max="100" placeholder="Sales Score от 0 до 100"><button onclick="load()">Применить фильтры</button>
 </div>
-<div class="tablebox"><table><thead><tr><th>Sales Score</th><th>Project Score</th><th>Приоритет</th><th>Компания</th><th>Проект</th><th>Локация</th><th>Инвестиции</th><th>Стадия проекта</th><th>Земельный участок</th><th>Что делать</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="tablebox"><table><thead><tr><th>Sales</th><th>Project</th><th>Актуальность</th><th>Приоритет</th><th>Компания</th><th>Проект</th><th>Локация</th><th>Инвестиции</th><th>Стадия</th><th>Земля</th><th>Что делать</th><th>Последний раз найден</th></tr></thead><tbody id="rows"></tbody></table></div>
 </div>
 <div class="modal" id="modal" onclick="if(event.target===this)closeModal()"><div class="panel"><button style="float:right" onclick="closeModal()">Закрыть</button><div id="detail">Загрузка…</div></div></div>
 <script>
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=v=>v==null?'–':new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(v)+' ₽';
+const date=v=>v?new Date(v).toLocaleDateString('ru-RU'):'–';
 const stageLabel=v=>({A:'A – Ранняя стадия',B:'B – Подготовка площадки',V:'V – Участок определён',G:'G – Строительство началось',unknown:'Стадия уточняется'}[v]||'Стадия уточняется');
-const landLabel=v=>({confirmed_needed:'Требуется земельный участок',high_probability:'Вероятно требуется участок',land_defined:'Участок уже определён',unknown:'Статус участка уточняется'}[v]||'Статус участка уточняется');
-const priorityLabel=v=>({A_hot:'Готов к контакту',A_priority:'Готов к контакту',B_work:'Высокий потенциал',B_strong:'Высокий потенциал',C_verify:'Требует проверки',D_research:'Низкий приоритет',D_low:'Низкий приоритет'}[v]||'Не определён');
-const companyConfidenceLabel=v=>({high:'Подтверждено',medium:'Вероятно подтверждено',low:'Слабое подтверждение',unresolved:'Не подтверждено'}[v]||'Не подтверждено');
-const actionLabel=v=>({resolve_company:'Установить компанию-инвестора',contact_now:'Связаться с ЛПР',find_decision_maker:'Найти ЛПР и контакты',verify_project_status:'Проверить актуальный статус проекта',research_later:'Повторно проверить позже',deep_verify_now:'Срочно проверить проект',verify_and_enrich:'Проверить и собрать контакты',verify_if_capacity:'Проверить статус',keep_low_priority:'Повторно проверить позже',manual_verification:'Проверить вручную'}[v]||'Проверить лид');
-async function load(){let q=new URLSearchParams();for(let [id,key] of [['priority','sales_priority'],['stage','stage'],['company','company'],['minSales','min_sales_score']]){let v=document.getElementById(id).value;if(v)q.set(key,v)}q.set('limit','200');let d=await fetch('/projects?'+q).then(r=>r.json());render(d.projects||[])}
-function render(ps){document.getElementById('sAll').textContent=ps.length;document.getElementById('sReady').textContent=ps.filter(x=>(x.sales_score??0)>=90).length;document.getElementById('sHot').textContent=ps.filter(x=>(x.sales_score??0)>=70&&(x.sales_score??0)<90).length;document.getElementById('sVerify').textContent=ps.filter(x=>(x.sales_score??0)>=50&&(x.sales_score??0)<70||x.bucket==='verification_pool').length;document.getElementById('rows').innerHTML=ps.map(p=>`<tr class="click" onclick="openProject('${p.id}')"><td class="score">${p.sales_score??'–'}</td><td>${p.project_score??p.lead_score??'–'}</td><td><span class="badge ${p.sales_priority==='A_hot'?'hot':p.bucket==='verification_pool'?'verify':''}">${priorityLabel(p.sales_priority||p.priority)}</span></td><td><div class="company">${esc(p.company_name||'Компания не установлена')}</div><div class="muted">${esc(p.inn?'ИНН '+p.inn:'')}</div></td><td class="summary"><b>${esc(p.project_type||'–')}</b><div class="muted">${esc(p.project_summary||'')}</div></td><td>${esc(p.location||'–')}</td><td>${money(p.investment_rub)}</td><td>${stageLabel(p.stage)}</td><td>${landLabel(p.land_status)}</td><td>${actionLabel(p.recommended_action)}</td></tr>`).join('')}
-async function openProject(id){document.getElementById('modal').classList.add('open');let p=await fetch('/projects/'+id).then(r=>r.json());let contacts=(p.contacts||[]).map(c=>`<div class="contact"><b>${esc(c.name||'Корпоративный контакт')}</b> – ${esc(c.role||'')}<br>${esc(c.email||'')} ${esc(c.phone||'')}<br><a href="${esc(c.source_url)}" target="_blank">источник</a></div>`).join('')||'<span class="muted">Подтверждённые контакты пока не найдены</span>';let sources=(p.sources||[]).map(s=>`<div><a href="${esc(s.url)}" target="_blank">${esc(s.title||s.domain||s.url)}</a></div>`).join('');document.getElementById('detail').innerHTML=`<h2>${esc(p.company_name||p.project_type||'Проект')}</h2><div class="grid"><div class="card"><b>Sales Score – готовность лида к продаже</b><div class="score">${p.sales_score??'–'} / 100</div></div><div class="card"><b>Project Score – соответствие нашим услугам</b><div class="score">${p.project_score??p.lead_score??'–'} / 100</div></div><div class="card wide"><b>Что происходит</b><p>${esc(p.project_summary||'–')}</p><div>${esc(p.location||'–')} – ${money(p.investment_rub)}</div></div><div class="card"><b>Компания</b><p>${esc(p.company_name||'Не установлена')}</p><div>${esc(p.legal_name||'')}</div><div>${esc(p.inn?'ИНН '+p.inn:'')} ${esc(p.ogrn?'ОГРН '+p.ogrn:'')}</div>${p.website?`<a href="${esc(p.website)}" target="_blank">Сайт</a>`:''}</div><div class="card"><b>Что делать</b><p>${priorityLabel(p.sales_priority||p.priority)}</p><div>Стадия: ${stageLabel(p.stage)}</div><div>Земля: ${landLabel(p.land_status)}</div><div>Следующий шаг: ${actionLabel(p.recommended_action)}</div></div><div class="card wide"><b>ЛПР и контакты</b>${contacts}</div><div class="card wide"><b>Источники</b>${sources}</div></div>`}
+const landLabel=v=>({confirmed_needed:'Требуется участок',high_probability:'Вероятно требуется',land_defined:'Участок определён',unknown:'Уточняется'}[v]||'Уточняется');
+const priorityLabel=v=>({A_hot:'Готов к контакту',A_priority:'Высокий',B_work:'Высокий потенциал',B_strong:'Высокий потенциал',C_verify:'Требует проверки',D_research:'Низкий',D_low:'Низкий'}[v]||'Не определён');
+const actionLabel=v=>({resolve_company:'Установить компанию-инвестора',contact_now:'Связаться с ЛПР',find_decision_maker:'Найти ЛПР и контакты',verify_project_status:'Проверить актуальный статус проекта',research_later:'Повторно проверить позже',manual_verification:'Проверить вручную'}[v]||'Проверить лид');
+function fresh(p){if(p.is_new)return '<span class="badge new">Новый</span>';if(p.freshness_status==='needs_review')return '<span class="badge review">Проверить актуальность</span>';if(p.freshness_status==='not_seen_once')return '<span class="badge miss">Не найден 1 раз</span>';return '<span class="badge">Актуален</span>'}
+async function lastRun(){try{let d=await fetch('/projects/search-runs?limit=1').then(r=>r.json());let x=(d.runs||[])[0];if(x)document.getElementById('lastRun').textContent='Последний поиск: '+date(x.finished_at||x.started_at)+(x.status!=='success'?' – '+x.status:'')}catch(e){}}
+async function load(){let q=new URLSearchParams();for(let [id,key] of [['priority','sales_priority'],['stage','stage'],['company','company'],['minSales','min_sales_score']]){let v=document.getElementById(id).value;if(v)q.set(key,v)}q.set('limit','200');let d=await fetch('/projects?'+q).then(r=>r.json());render(d.projects||[]);lastRun()}
+function render(ps){document.getElementById('sAll').textContent=ps.length;document.getElementById('sNew').textContent=ps.filter(x=>x.is_new).length;document.getElementById('sHot').textContent=ps.filter(x=>(x.sales_score??0)>=70).length;document.getElementById('sReview').textContent=ps.filter(x=>x.freshness_status==='needs_review'||x.bucket==='verification_pool'||((x.sales_score??0)>=50&&(x.sales_score??0)<70)).length;document.getElementById('rows').innerHTML=ps.map(p=>`<tr class="click" onclick="openProject('${p.id}')"><td class="score">${p.sales_score??'–'}</td><td>${p.project_score??p.lead_score??'–'}</td><td>${fresh(p)}</td><td><span class="badge ${p.sales_priority==='A_hot'?'hot':(p.sales_score??0)<50?'low':''}">${priorityLabel(p.sales_priority||p.priority)}</span></td><td><div class="company">${esc(p.company_name||'Компания не установлена')}</div><div class="muted">${esc(p.inn?'ИНН '+p.inn:'')}</div></td><td class="summary"><b>${esc(p.project_type||'–')}</b><div class="muted">${esc(p.project_summary||'')}</div></td><td>${esc(p.location||'–')}</td><td>${money(p.investment_rub)}</td><td>${stageLabel(p.stage)}</td><td>${landLabel(p.land_status)}</td><td>${actionLabel(p.recommended_action)}</td><td>${date(p.last_seen_at)}</td></tr>`).join('')}
+async function openProject(id){document.getElementById('modal').classList.add('open');let p=await fetch('/projects/'+id).then(r=>r.json());let contacts=(p.contacts||[]).map(c=>`<div class="contact"><b>${esc(c.name||'Корпоративный контакт')}</b> – ${esc(c.role||'')}<br>${esc(c.email||'')} ${esc(c.phone||'')}<br>${c.source_url?`<a href="${esc(c.source_url)}" target="_blank">источник</a>`:''}</div>`).join('')||'<span class="muted">Подтверждённые контакты пока не найдены</span>';let sources=(p.sources||[]).map(s=>`<div><a href="${esc(s.url)}" target="_blank">${esc(s.title||s.domain||s.url)}</a></div>`).join('')||'<span class="muted">Источники не сохранены</span>';document.getElementById('detail').innerHTML=`<h2>${esc(p.company_name||p.project_type||'Проект')}</h2><div class="grid"><div class="card"><b>Sales Score</b><div class="score">${p.sales_score??'–'} / 100</div></div><div class="card"><b>Project Score</b><div class="score">${p.project_score??p.lead_score??'–'} / 100</div></div><div class="card wide"><b>Актуальность</b><p>${fresh(p)} &nbsp; Последний раз найден: ${date(p.last_seen_at)} &nbsp; Впервые найден: ${date(p.first_seen_at)}</p></div><div class="card wide"><b>Что происходит</b><p>${esc(p.project_summary||'–')}</p><div>${esc(p.location||'–')} – ${money(p.investment_rub)}</div></div><div class="card"><b>Компания</b><p>${esc(p.company_name||'Не установлена')}</p><div>${esc(p.legal_name||'')}</div><div>${esc(p.inn?'ИНН '+p.inn:'')} ${esc(p.ogrn?'ОГРН '+p.ogrn:'')}</div>${p.website?`<a href="${esc(p.website)}" target="_blank">Сайт компании</a>`:''}</div><div class="card"><b>Что делать</b><p>${priorityLabel(p.sales_priority||p.priority)}</p><div>Стадия: ${stageLabel(p.stage)}</div><div>Земля: ${landLabel(p.land_status)}</div><div>Следующий шаг: ${actionLabel(p.recommended_action)}</div></div><div class="card wide"><b>ЛПР и контакты</b>${contacts}</div><div class="card wide"><b>Источники</b>${sources}</div></div>`}
 function closeModal(){document.getElementById('modal').classList.remove('open')}
-async function startRun(){let b=document.getElementById('runBtn');b.disabled=true;document.getElementById('runStatus').textContent='Идёт поиск новых лидов…';try{let x=await fetch('/projects/search-runs/start',{method:'POST'}).then(r=>r.json());poll(x.task_id)}catch(e){document.getElementById('runStatus').textContent='Не удалось запустить поиск';b.disabled=false}}
-async function poll(id){let x=await fetch('/projects/tasks/'+id).then(r=>r.json());document.getElementById('runStatus').textContent='Поиск: '+x.status;if(['SUCCESS','FAILURE'].includes(x.status)){document.getElementById('runBtn').disabled=false;if(x.status==='SUCCESS')load();return}setTimeout(()=>poll(id),4000)}
+async function startRun(){if(!confirm('Запустить новый поиск? Обычно достаточно одного запуска в неделю.'))return;let b=document.getElementById('runBtn');b.disabled=true;document.getElementById('runStatus').textContent='Идёт поиск…';try{let x=await fetch('/projects/search-runs/start',{method:'POST'}).then(r=>r.json());poll(x.task_id)}catch(e){document.getElementById('runStatus').textContent='Не удалось запустить поиск';b.disabled=false}}
+async function poll(id){let x=await fetch('/projects/tasks/'+id).then(r=>r.json());document.getElementById('runStatus').textContent='Поиск: '+x.status;if(['SUCCESS','FAILURE'].includes(x.status)){document.getElementById('runBtn').disabled=false;if(x.status==='SUCCESS'){let result=x.result||{};if(result.status==='blocked_tavily_quota')alert('Лимит Tavily исчерпан. Предыдущая база сохранена без изменений.');load()}return}setTimeout(()=>poll(id),4000)}
 load();
-
-async function rescoreCurrent(){
-  if(!confirm('Пересчитать Sales Score и Project Score по уже сохранённым данным? Интернет-поиск не запускается.')) return;
-  const btns=[...document.querySelectorAll('button')];
-  const b=btns.find(x=>x.textContent.includes('Пересчитать текущую базу'));
-  if(b){b.disabled=true;b.textContent='Пересчитываю...'}
-  try{
-    const r=await fetch('/projects/rescore-current',{method:'POST'});
-    const d=await r.json();
-    if(!r.ok) throw new Error(JSON.stringify(d));
-    alert(`Готово. Обновлено проектов: ${d.rows_updated}. Изменений показано: ${d.changed_examples.length}`);
-    location.reload();
-  }catch(e){
-    alert('Ошибка пересчёта: '+e);
-    if(b){b.disabled=false;b.textContent='Пересчитать текущую базу'}
-  }
-}
-
 </script></body></html>'''
 
 
