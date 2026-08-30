@@ -12,6 +12,7 @@ from app.services.lead_scoring import score_projects
 from app.services.temporal_quality import assess_temporal_projects
 from app.services.company_enrichment import enrich_projects
 from app.services.sales_scoring import score_sales_projects
+from app.services.final_quality_gate import apply_business_relevance, deduplicate_business_projects
 from app.services.project_persistence import (
     create_search_run,
     finish_search_run,
@@ -81,7 +82,9 @@ def qualification_discovery_test():
             max_projects=10,
             min_project_score=45,
         )
-        sales_scoring = score_sales_projects(enrichment["projects"])
+        business_checked = apply_business_relevance(enrichment["projects"])
+        final_dedup = deduplicate_business_projects(business_checked)
+        sales_scoring = score_sales_projects(final_dedup["projects"])
 
         persistence = persist_pipeline_results(
             search_run_id=search_run_id,
@@ -102,13 +105,14 @@ def qualification_discovery_test():
                 "below_threshold_count": ranking["below_threshold_count"],
                 "enrichment_processed": enrichment["processed_count"],
                 "enrichment_resolved": enrichment["resolved_count"],
-                "pipeline_version": "quality-v4",
+                "final_duplicates_merged": final_dedup["merged_count"],
+                "pipeline_version": "quality-v4.1",
             },
         )
 
         return {
             "search_run_id": search_run_id,
-            "pipeline_version": "quality-v4",
+            "pipeline_version": "quality-v4.1",
             "discovery": {
                 "queries_used": discovery["queries_used"],
                 "unique_results": discovery["unique_results"],
@@ -166,6 +170,11 @@ def qualification_discovery_test():
                 "processed_count": enrichment["processed_count"],
                 "resolved_count": enrichment["resolved_count"],
                 "unresolved_count": enrichment["unresolved_count"],
+            },
+            "final_quality_gate": {
+                "input_count": final_dedup["input_count"],
+                "unique_count": final_dedup["unique_count"],
+                "merged_count": final_dedup["merged_count"],
             },
             "sales_scoring": {
                 "projects_scored_count": sales_scoring["projects_scored_count"],
