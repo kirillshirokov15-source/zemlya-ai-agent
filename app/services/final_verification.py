@@ -1,217 +1,103 @@
 from __future__ import annotations
+
 from typing import Any
 
-
-PAUSED_MARKERS = (
-    "проект приостановлен",
-    "реализация приостановлена",
-    "проект заморожен",
-    "строительство приостановлено",
-)
-STARTED_MARKERS = (
-    "строительство началось",
-    "начаты строительно-монтажные работы",
-    "ведется строительство",
-    "ведётся строительство",
-)
-MODERNIZATION_MARKERS = (
-    "модернизац",
-    "реконструкц",
-    "техническ перевооруж",
-)
+from app.services.sales_scoring import get_contact_state
 
 
 def _text(project: dict[str, Any]) -> str:
-    q = project.get("qualification") or {}
-    return " ".join(
-        str(x or "")
-        for x in (
-            project.get("project_summary"),
-            project.get("location"),
-            project.get("project_type"),
-            q.get("project_summary"),
-            q.get("location"),
-            q.get("project_type"),
-        )
-    ).lower()
-
-
-def _contact_state(project: dict[str, Any]) -> dict[str, bool]:
-    e = project.get("enrichment") or {}
-    ce = project.get("contact_enrichment") or {}
-
-    contacts = ce.get("contacts") or e.get("contacts") or project.get("contacts") or []
-
-    has_named_lpr = any(
-        c.get("name") and (c.get("role") or c.get("position"))
-        and c.get("contact_type") in {"decision_maker", "executive", None}
-        for c in contacts
-    )
-
-    has_direct_lpr = any(
-        c.get("name")
-        and (c.get("role") or c.get("position"))
-        and (c.get("phone") or c.get("email"))
-        and c.get("contact_type") in {"decision_maker", "executive", None}
-        for c in contacts
-    )
-
-    has_general_contact = bool(
-        ce.get("general_company_email")
-        or ce.get("general_company_phone")
-        or e.get("general_company_email")
-        or e.get("general_company_phone")
-        or any(
-            (c.get("phone") or c.get("email"))
-            and c.get("contact_type") == "company_general"
-            for c in contacts
-        )
-    )
-
-    return {
-        "has_named_lpr": has_named_lpr,
-        "has_direct_lpr": has_direct_lpr,
-        "has_general_contact": has_general_contact,
-        "has_any_contact": has_direct_lpr or has_general_contact,
-    }
+    parts = [
+        project.get("project_summary"),
+        project.get("project_type"),
+        project.get("status_text"),
+    ]
+    raw = project.get("raw")
+    if isinstance(raw, dict):
+        parts.extend([
+            raw.get("project_summary"),
+            raw.get("reason"),
+            raw.get("current_status"),
+        ])
+    return " ".join(str(x or "").lower() for x in parts)
 
 
 def verify_project(project: dict[str, Any]) -> dict[str, Any]:
-    text = _text(project)
-    q = project.get("qualification") or project
+    """
+    Final Verification V8.
 
-    project_score = int(project.get("project_score") or project.get("lead_score") or 0)
-    sales_score = int(project.get("sales_score") or 0)
+    Important:
+    – no blanket max-79 cap for missing direct LPR;
+    – stage V always means the site/plot is already defined;
+    – stage G, paused and existing-site modernization remain hard business gates.
+    """
+    out = dict(project)
+    score = int(out.get("sales_score") or 0)
+    project_score = int(out.get("project_score") or out.get("lead_score") or 0)
+    stage = str(out.get("stage") or "")
+    land = out.get("land_status")
+    text = _text(out)
     flags: list[str] = []
 
-    cs = _contact_state(project)
+    cs = get_contact_state(out)
 
-    company_conf = (
-        project.get("company_resolution_confidence")
-        or (project.get("enrichment") or {}).get("resolution_confidence")
-        or "unresolved"
-    )
-
-    stage = q.get("stage") or project.get("stage")
-    land = q.get("land_status") or project.get("land_status")
-
-    # ------------------------------------------------------------
-    # BUSINESS CONSISTENCY
-    # ------------------------------------------------------------
-    # Stage V means the site has already been selected/provided.
-    # It cannot simultaneously be treated as an early land-search lead.
     if stage == "V":
-        flags.append("stage_v_site_defined")
-        if land in {"confirmed_needed", "high_probability", "unknown", None}:
-            land = "land_defined"
-            flags.append("land_status_corrected_to_defined")
-        sales_score = min(sales_score, 59)
+        land = "land_defined"
+        flags.extend(["stage_v_site_defined", "land_status_forced_to_defined"])
 
     if land == "land_defined":
         flags.append("land_already_defined")
-        sales_score = min(sales_score, 59)
 
-    # ------------------------------------------------------------
-    # CONTACT READINESS – FINAL HARD CAPS
-    # ------------------------------------------------------------
-    # These caps are repeated here intentionally. This makes the final output
-    # correct even if an older sales_scoring implementation is accidentally
-    # deployed.
-    if not cs["has_named_lpr"] and not cs["has_any_contact"]:
-        sales_score = min(sales_score, 49)
-        flags.append("no_lpr_no_contact")
-    elif cs["has_named_lpr"] and not cs["has_any_contact"]:
-        sales_score = min(sales_score, 59)
-        flags.append("named_lpr_no_contact")
-    elif cs["has_general_contact"] and not cs["has_direct_lpr"]:
-        sales_score = min(sales_score, 79)
-        flags.append("general_contact_only")
-    elif not cs["has_direct_lpr"]:
-        sales_score = min(sales_score, 79)
-        flags.append("no_direct_lpr_contact")
+    paused = any(x in text for x in ("приостанов", "заморож", "отложен", "suspended", "paused"))
+    modernization = any(x in text for x in (
+        "модернизац", "реконструкц", "техническое перевооруж",
+        "техперевооруж", "существующей площадк", "существующего производ"
+    ))
 
-    # ------------------------------------------------------------
-    # PROJECT QUALITY GUARDS
-    # ------------------------------------------------------------
-    if company_conf == "unresolved":
-        flags.append("company_unresolved")
-        sales_score = min(sales_score, 49)
-
-    if any(m in text for m in PAUSED_MARKERS):
-        flags.append("project_paused")
+    if paused:
         project_score = min(project_score, 35)
-        sales_score = min(sales_score, 29)
+        score = min(score, 29)
+        flags.append("project_paused")
 
-    if stage == "G" or any(m in text for m in STARTED_MARKERS):
-        flags.append("construction_started")
+    if stage == "G":
         project_score = min(project_score, 45)
-        sales_score = min(sales_score, 39)
+        score = min(score, 39)
+        flags.append("construction_started")
 
-    if any(m in text for m in MODERNIZATION_MARKERS):
-        flags.append("existing_site_modernization")
+    if modernization:
         project_score = min(project_score, 30)
-        sales_score = min(sales_score, 29)
+        score = min(score, 35)
+        flags.append("existing_site_modernization")
 
-    sales_score = max(0, min(100, int(sales_score)))
-
-    if sales_score >= 90 and cs["has_direct_lpr"]:
-        final_grade = "A_ready"
-        sales_priority = "A_hot"
-        recommended_action = "contact_now"
-    elif sales_score >= 70:
-        final_grade = "B_high"
-        sales_priority = "B_work"
-        recommended_action = "find_decision_maker"
-    elif sales_score >= 50:
-        final_grade = "C_verify"
-        sales_priority = "C_verify"
-        recommended_action = "verify_project_status"
+    # Readiness is a status, not a blanket score cap.
+    if score >= 90 and cs["has_direct_lpr"]:
+        priority, action, grade = "A_hot", "contact_now", "A_ready"
+    elif score >= 70:
+        priority = "B_work"
+        action = "contact_now" if cs["has_direct_lpr"] else "find_decision_maker"
+        grade = "B_high"
+    elif score >= 50:
+        priority, action, grade = "C_verify", "verify_project_status", "C_verify"
     else:
-        final_grade = "D_low"
-        sales_priority = "D_research"
-        recommended_action = "research_later"
+        priority, action, grade = "D_research", "research_later", "D_low"
 
-    out = dict(project)
-    out["project_score"] = project_score
-    out["sales_score"] = sales_score
-    out["sales_priority"] = sales_priority
-    out["recommended_action"] = recommended_action
-    out["final_grade"] = final_grade
-    out["final_verification_flags"] = flags
-    out["final_verification_passed"] = not any(
-        f in flags
-        for f in (
-            "company_unresolved",
-            "project_paused",
-            "construction_started",
-            "existing_site_modernization",
-        )
-    )
-    out["sales_contact_state"] = cs
+    out.update({
+        "sales_score": max(0, min(100, score)),
+        "project_score": project_score,
+        "land_status": land,
+        "sales_priority": priority,
+        "recommended_action": action,
+        "final_grade": grade,
+        "final_verification_passed": not (paused or stage == "G" or modernization),
+        "final_verification_flags": flags,
+        "sales_contact_state": cs,
+        "final_verification_version": "v8",
+    })
 
-    # Correct inconsistent land status in the visible top-level output and
-    # nested qualification payload.
-    out["land_status"] = land
-    if out.get("qualification"):
-        nested = dict(out["qualification"])
-        nested["land_status"] = land
-        out["qualification"] = nested
+    q = out.get("qualification")
+    if isinstance(q, dict):
+        q = dict(q)
+        q["stage"] = stage
+        q["land_status"] = land
+        out["qualification"] = q
 
     return out
-
-
-def verify_and_rank(projects: list[dict[str, Any]]) -> dict[str, Any]:
-    verified = [verify_project(p) for p in projects]
-    verified.sort(
-        key=lambda p: (
-            p.get("sales_score") or 0,
-            p.get("project_score") or 0,
-        ),
-        reverse=True,
-    )
-    return {
-        "projects": verified,
-        "verified_count": len(verified),
-        "passed_count": sum(1 for p in verified if p.get("final_verification_passed")),
-        "needs_attention_count": sum(1 for p in verified if not p.get("final_verification_passed")),
-    }
